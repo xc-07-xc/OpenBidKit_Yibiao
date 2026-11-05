@@ -151,6 +151,19 @@
 </table>
 
 
+## 🤖 多 Agent 编排流水线（Agent Harness）
+
+在标书功能之上提供一条可运行的多智能体编排链路：**解析 → 资格 → 技术 ∥ 法规 → 生成 → 一致性检查**，关键节点设人工闸门，质检不过自动回退重生成。
+
+- **知识库**：阶段检索本地知识库并注入提示词，阶段产物自动回写「流水线产物」文件夹
+- **Agent 团队**：7 个角色（总控 / 解析 / 资格 / 技术 / 法规 / 生成 / 质检），每阶段独立 Agent 会话与工具白名单
+- **图编排**：LangGraph（并行扇出、条件回边、`interrupt()` 人工闸门、`run_id` 隔离、异步启动 + 轮询）
+- **验证**：每阶段 JSON Schema 校验 + 一致性评分/分级/分类 + 人工确认，返工轮次与通过率可观测
+
+入口：侧边栏「多 Agent 流水线」。技术细节见 [agent-langgraph/README.md](./agent-langgraph/README.md)，比赛用方案与演示脚本见 [docs/competition/技术方案.md](./docs/competition/技术方案.md)。
+
+打包注意：安装包可携带 LangGraph sidecar（`cd client; npm run prepare-langgraph-sidecar` 构建）；未构建时自动回退内置编排器，页头会显示当前编排模式。
+
 ## 📦 下载与使用
 
 ### ⬇️ 下载方式
