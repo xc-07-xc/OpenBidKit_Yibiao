@@ -370,7 +370,7 @@ async function registerWorkspaceDatabaseServices({ app, mainWindow, configStore,
   if (preferLangGraph) {
     pythonServiceRef = createPythonService();
     pythonServiceRef.start();
-    const healthy = await pythonServiceRef.waitHealthy(15000);
+    const healthy = await pythonServiceRef.waitHealthy(30000);
     if (healthy) {
       const bridge = createLangGraphBridge();
       activeOrchestrator = createLangGraphOrchestrator({
@@ -478,6 +478,12 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
     autoConfirmationService.close?.();
     await openXmlHelperService.close?.();
     await openXmlHelperService.closeBlindCheck?.();
+    try {
+      // 先停轮询再停 Python 服务，避免退出过程中继续打 /graph/state。
+      pipelineOrchestratorRef?.dispose?.();
+    } catch (error) {
+      console.warn('[pipeline] 停止编排器轮询失败', error?.message || String(error));
+    }
     try {
       pythonServiceRef?.stop?.();
     } catch (error) {

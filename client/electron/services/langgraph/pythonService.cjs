@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const SERVICE_PORT = Number(process.env.LANGGRAPH_SERVICE_PORT || 8765);
 const NODE_INTERNAL_PORT = process.env.NODE_INTERNAL_PORT || '8788';
@@ -128,7 +128,13 @@ function createPythonService() {
     stopped = true;
     if (child && !child.killed) {
       try {
-        child.kill();
+        if (process.platform === 'win32' && child.pid) {
+          // PyInstaller onefile 会派生实际服务子进程，child.kill() 只结束 bootloader，
+          // 子进程仍占着 8765，下次启动会连到旧实例，所以按进程树结束。
+          spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+        } else {
+          child.kill();
+        }
       } catch (error) {
         console.warn('[langgraph] 停止子进程失败', error?.message || String(error));
       }

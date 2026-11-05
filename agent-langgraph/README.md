@@ -108,9 +108,11 @@ npm run prepare-langgraph-sidecar -- --check   # 只检查环境
 ```powershell
 .venv\Scripts\python.exe smoke_graph.py    # 图拓扑：顺序、并行、两轮回退、闸门恢复
 .venv\Scripts\python.exe smoke_server.py   # HTTP：异步启动、run_id 隔离、轮询、404/409
+.venv\Scripts\python.exe smoke_sidecar.py  # 打包产物：真实 exe + mock 执行器的端到端闭环
 ```
 
-两个脚本都不依赖 Electron 与模型调用。
+前两个脚本都不依赖 Electron 与模型调用；`smoke_sidecar.py` 需要先构建 sidecar，
+默认读取 `client/vendor/langgraph-sidecar/win32-x64/yibiao-langgraph.exe`，可用 `--exe` 指定。
 
 ## 现状与边界
 
