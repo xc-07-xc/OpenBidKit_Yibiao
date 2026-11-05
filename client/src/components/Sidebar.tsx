@@ -18,6 +18,7 @@ interface SidebarProps {
 
 const navigationIcons: Record<SectionId, ComponentType<SVGProps<SVGSVGElement>>> = {
   'bid-generation': BidGenerationIcon,
+  pipeline: PipelineIcon,
   'technical-plan': DocumentIcon,
   'feasibility-report': DocumentIcon,
   'knowledge-base': ArchiveIcon,
@@ -291,6 +292,18 @@ function wrapTooltip(label: string, child: ReactElement) {
         </Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
+  );
+}
+
+function PipelineIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" {...props}>
+      <circle cx="5" cy="12" r="2.2" />
+      <circle cx="12" cy="12" r="2.2" />
+      <circle cx="19" cy="12" r="2.2" />
+      <path d="M7.2 12h2.6" />
+      <path d="M14.2 12h2.6" />
+    </svg>
   );
 }
 

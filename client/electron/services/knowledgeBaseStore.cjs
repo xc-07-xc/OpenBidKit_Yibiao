@@ -453,6 +453,53 @@ function createKnowledgeBaseStore({ app, db }) {
     return insertOrUpdateDocument(withOrder);
   }
 
+  function importPipelineArtifact({ folderName, documentName, summary, items, markdown } = {}) {
+    const folderLabel = safeName(folderName || '流水线产物');
+    const existing = list().folders.find((folder) => folder.name === folderLabel);
+    const folder = existing || createFolder(folderLabel);
+    const folderId = existing ? existing.id : folder.id;
+    const timestamp = now();
+    const docId = `art-${stableHash(`${folderLabel}::${documentName}`).slice(0, 12)}`;
+    const documentDir = path.join('folders', folderId, 'documents', docId).replace(/\\/g, '/');
+    const markdownPath = path.join(documentDir, 'content.md').replace(/\\/g, '/');
+    const markdownText = String(markdown || summary || '');
+    const absMarkdown = resolvePath(markdownPath);
+    fs.mkdirSync(path.dirname(absMarkdown), { recursive: true });
+    fs.writeFileSync(absMarkdown, markdownText, 'utf-8');
+    const finalItems = (Array.isArray(items) ? items : [])
+      .filter((item) => item && (item.title || item.content))
+      .map((item, index) => ({
+        id: String(item.id || `item-${index}`),
+        title: String(item.title || '未命名条目'),
+        resume: String(item.resume || item.summary || ''),
+        content: String(item.content || ''),
+        source_file: item.source_file || documentName,
+      }));
+    insertOrUpdateDocument(
+      {
+        id: docId,
+        folder_id: folderId,
+        file_name: safeName(documentName || '未命名产物'),
+        document_dir: documentDir,
+        source_path: null,
+        markdown_path: markdownPath,
+        source_extension: '.md',
+        status: 'success',
+        progress: 100,
+        message: '流水线产物自动回写',
+        error: null,
+        item_count: finalItems.length,
+        block_count: finalItems.length,
+        sort_order: getNextDocumentSortOrder(folderId),
+        created_at: timestamp,
+        updated_at: timestamp,
+      },
+      { markdownChars: markdownText.length },
+    );
+    replaceFinalItems(docId, finalItems);
+    return { documentId: docId, folderId, itemCount: finalItems.length };
+  }
+
   function reorderFolders(draggedFolderId, targetFolderId, position) {
     const normalizedPosition = normalizeDropPosition(position);
     const folderIds = db.prepare('SELECT folder_id FROM knowledge_folders ORDER BY sort_order ASC, created_at ASC').all().map((row) => row.folder_id);
@@ -1212,6 +1259,7 @@ function createKnowledgeBaseStore({ app, db }) {
     readItems,
     readAnalysis,
     getOutlineReferences,
+    importPipelineArtifact,
     search,
     resolvePath,
   };

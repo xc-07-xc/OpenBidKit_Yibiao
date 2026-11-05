@@ -34,6 +34,17 @@ const { createDonationService } = require('../services/donationService.cjs');
 const { createDuplicateCheckService } = require('../services/duplicateCheckService.cjs');
 const { createDuplicateCheckStore } = require('../services/duplicateCheckStore.cjs');
 const { createBlindCheckStore } = require('../services/blindCheckStore.cjs');
+const { createPipelineStore } = require('../services/pipeline/pipelineStore.cjs');
+const { createPipelineOrchestrator } = require('../services/pipeline/orchestrator.cjs');
+const { createDefaultRunners } = require('../services/pipeline/pipelineRunners.cjs');
+const { createStageHttpServer } = require('../services/pipeline/pipelineStageExecutor.cjs');
+const { createLangGraphOrchestrator } = require('../services/pipeline/langgraphOrchestrator.cjs');
+const { createLangGraphBridge } = require('../services/langgraph/langgraphBridge.cjs');
+const { createPythonService } = require('../services/langgraph/pythonService.cjs');
+const { registerPipelineIpc, registerPipelineExportIpc } = require('./pipelineIpc.cjs');
+// 编排器在数据库服务函数内创建，导出 IPC 在主 IPC 注册函数内挂载，用模块级引用跨函数共享。
+let pipelineOrchestratorRef = null;
+let pythonServiceRef = null;
 const { createCheckResultExportService } = require('../services/checkResultExportService.cjs');
 const { createExportService } = require('../services/exportService.cjs');
 const { createFileService } = require('../services/fileService.cjs');
@@ -255,6 +266,11 @@ const workspaceDatabaseChannels = [
   'templates:render-preview',
   'storage:get-usage',
   'storage:clean',
+  'pipeline:start',
+  'pipeline:approve',
+  'pipeline:reject',
+  'pipeline:get-state',
+  'pipeline:import-tender',
 ];
 
 function clearWorkspaceDatabaseIpc() {
@@ -313,7 +329,7 @@ function registerWorkspaceDatabaseStatusIpc({ mainWindow }) {
   };
 }
 
-function registerWorkspaceDatabaseServices({ app, configStore, aiService, agentService, autoConfirmationService, fileService, openXmlHelperService, isUpdateCacheInUse, updateStatus }) {
+async function registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiService, agentService, autoConfirmationService, fileService, openXmlHelperService, isUpdateCacheInUse, updateStatus }) {
   const sqliteDatabase = createSqliteDatabase(app, { onStatus: updateStatus });
   runHistoricalStorageCleanup({ app, db: sqliteDatabase.db, configStore, onStatus: updateStatus });
   clearStalePiTaskArchives(app);
@@ -329,6 +345,49 @@ function registerWorkspaceDatabaseServices({ app, configStore, aiService, agentS
   const duplicateCheckStore = createDuplicateCheckStore({ app, db: sqliteDatabase.db, taskLogStore });
   const rejectionCheckStore = createRejectionCheckStore({ app, db: sqliteDatabase.db, fileService, technicalPlanStore, taskLogStore });
   const blindCheckStore = createBlindCheckStore({ app, db: sqliteDatabase.db, taskLogStore, credentialLibraryService, fileService, technicalPlanStore });
+  const pipelineStore = createPipelineStore({ db: sqliteDatabase.db });
+  // 上一轮若停在运行中/闸门，重启后已无人推进，先收敛为阻塞，避免界面出现点不动的“待确认”。
+  pipelineStore.recoverInterrupted();
+  const runners = createDefaultRunners({ agentService, app, knowledgeBaseStore });
+  // 内部阶段执行 HTTP 服务：供 LangGraph Python 服务回调复用现有 Runner。
+  createStageHttpServer({ runners }).start();
+
+  const emitPipeline = (state) => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('pipeline:event', state);
+    }
+  };
+  const legacyOrchestrator = () => createPipelineOrchestrator({
+    pipelineStore,
+    runners,
+    knowledgeBaseStore,
+    app,
+    emit: emitPipeline,
+  });
+
+  let activeOrchestrator = legacyOrchestrator();
+  const preferLangGraph = (process.env.PIPELINE_ORCHESTRATOR || 'langgraph') !== 'legacy';
+  if (preferLangGraph) {
+    pythonServiceRef = createPythonService();
+    pythonServiceRef.start();
+    const healthy = await pythonServiceRef.waitHealthy(15000);
+    if (healthy) {
+      const bridge = createLangGraphBridge();
+      activeOrchestrator = createLangGraphOrchestrator({
+        pipelineStore,
+        knowledgeBaseStore,
+        app,
+        emit: emitPipeline,
+        bridge,
+      });
+    } else {
+      console.warn('[langgraph] Python 服务未就绪，回退自研编排器');
+      pythonServiceRef.stop?.();
+      pythonServiceRef = null;
+    }
+  }
+  pipelineOrchestratorRef = activeOrchestrator;
+  console.log('[pipeline] 当前编排器：', activeOrchestrator?.getState?.().orchestrator || 'unknown');
   const templateStore = createTemplateStore({ db: sqliteDatabase.db });
   // 系统预设模板的真源在代码里，每次启动对齐一次，保证首启和版本升级都能拿到最新预设。
   templateStore.syncSystemTemplates();
@@ -357,6 +416,7 @@ function registerWorkspaceDatabaseServices({ app, configStore, aiService, agentS
   registerDuplicateCheckIpc({ duplicateCheckStore, checkResultExportService });
   registerRejectionCheckIpc({ rejectionCheckStore, taskService, checkResultExportService });
   registerBlindCheckIpc({ blindCheckStore, taskService, checkResultExportService });
+  registerPipelineIpc({ orchestrator: activeOrchestrator, fileService, app });
   registerTemplateIpc({ templateStore, openXmlHelperService });
   registerOfficialInvoiceIpc({ officialInvoiceStore: createOfficialInvoiceStore({ db: sqliteDatabase.db }) });
   registerTaskIpc({ taskService });
@@ -405,6 +465,7 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
   const openXmlHelperService = createOpenXmlHelperService({ app, configStore });
   let technicalPlanExport;
   const exportService = createExportService({ configStore, openXmlHelperService, getTechnicalPlanExport: () => technicalPlanExport });
+  registerPipelineExportIpc({ getOrchestrator: () => pipelineOrchestratorRef, exportService });
   const systemFontService = createSystemFontService();
   const databaseStatus = registerWorkspaceDatabaseStatusIpc({ mainWindow });
   let workspaceDatabaseStarted = false;
@@ -417,6 +478,12 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
     autoConfirmationService.close?.();
     await openXmlHelperService.close?.();
     await openXmlHelperService.closeBlindCheck?.();
+    try {
+      pythonServiceRef?.stop?.();
+    } catch (error) {
+      console.warn('[langgraph] 停止 Python 服务失败', error?.message || String(error));
+    }
+    pythonServiceRef = null;
   };
 
   const closeServicesBeforeExit = async () => {
@@ -531,9 +598,9 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
     if (workspaceDatabaseStarted) return;
     workspaceDatabaseStarted = true;
     databaseStatus.updateStatus({ phase: 'checking', ready: false, message: '正在检查本地数据库' });
-    setTimeout(() => {
+    setTimeout(async () => {
       try {
-        ({ technicalPlanExport } = registerWorkspaceDatabaseServices({ app, configStore, aiService, agentService, autoConfirmationService, fileService, openXmlHelperService, isUpdateCacheInUse, updateStatus: databaseStatus.updateStatus }));
+        ({ technicalPlanExport } = await registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiService, agentService, autoConfirmationService, fileService, openXmlHelperService, isUpdateCacheInUse, updateStatus: databaseStatus.updateStatus }));
         setTimeout(() => {
           void agentService.warmup?.().catch((error) => {
             console.warn('[agent] warmup failed', error?.message || String(error));

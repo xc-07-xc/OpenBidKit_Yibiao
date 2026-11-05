@@ -59,6 +59,11 @@ function getTechnicalPlanTenderMarkdownPath(app) {
   return path.join(getTechnicalPlanDir(app), 'tender.md');
 }
 
+/** 最近一次上传招标文件的解析元数据（文件名/字符数/解析方式），用于刷新后回显。 */
+function getTechnicalPlanTenderMetaPath(app) {
+  return path.join(getTechnicalPlanDir(app), 'tender-meta.json');
+}
+
 /** 招标 Word 原件目录。 */
 function getTechnicalPlanTenderOriginalsDir(app) {
   return path.join(getTechnicalPlanDir(app), 'tender-originals');
@@ -262,6 +267,7 @@ module.exports = {
   getTechnicalPlanBidTemplateFieldsPath,
   getTechnicalPlanBidTemplateBlankPath,
   getTechnicalPlanTenderMarkdownPath,
+  getTechnicalPlanTenderMetaPath,
   getTechnicalPlanTenderOriginalsDir,
   getWorkspaceDir,
   getWorkspaceDatabasePath,

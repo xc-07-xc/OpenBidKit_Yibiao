@@ -23,6 +23,11 @@ export const appMenuItems: AppMenuItem[] = [
     ],
   },
   {
+    id: 'pipeline',
+    label: '多 Agent 流水线',
+    description: '总控编排串联解析、资格、技术、法规检索、生成与一致性检查，人工闸门确认',
+  },
+  {
     id: 'template-settings',
     label: '模版设置',
     description: '标书导出模板与排版配置',

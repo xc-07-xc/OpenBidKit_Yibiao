@@ -3,7 +3,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { getWorkspaceDatabasePath } = require('../utils/paths.cjs');
 
-const schemaVersion = 44;
+const schemaVersion = 45;
 
 // 保存当前工作区的一份开票信息。
 function createOfficialInvoiceSchema(db) {
@@ -14,6 +14,24 @@ function createOfficialInvoiceSchema(db) {
       buyer TEXT NOT NULL DEFAULT '',
       tax_number TEXT NOT NULL DEFAULT '',
       email TEXT NOT NULL DEFAULT ''
+    );
+  `);
+}
+
+// 多 Agent 流水线阶段黑板：各阶段产物、人工闸门审批与执行日志。
+function createPipelineSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pipeline_stages (
+      stage_key TEXT PRIMARY KEY,
+      agent_id INTEGER NOT NULL DEFAULT 0,
+      label TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      inputs_json TEXT,
+      outputs_json TEXT,
+      approval_json TEXT,
+      logs_json TEXT,
+      started_at TEXT,
+      updated_at TEXT
     );
   `);
 }
@@ -1528,6 +1546,7 @@ const schemaHealthTableGroups = [
     tables: ['blind_check_reviews'],
     repair: createBlindCheckReviewSchema,
   },
+  { version: 45, tables: ['pipeline_stages'], repair: createPipelineSchema },
 ];
 
 function removeKnowledgeMigrationMeta(db) {
@@ -2088,6 +2107,11 @@ const migrations = [
     version: 44,
     description: '资信库企业资料新增邮编、传真、法定代表人身份证号和上年度规模指标',
     up: addCredentialLibraryProfileFields,
+  },
+  {
+    version: 45,
+    description: '新增多 Agent 流水线阶段黑板表',
+    up: createPipelineSchema,
   },
 ];
 

@@ -605,6 +605,62 @@ export interface DeveloperLayoutFigureResult {
   elapsedMs: number;
 }
 
+export type PipelineStageStatus = 'pending' | 'running' | 'waiting_approval' | 'success' | 'error' | 'blocked';
+
+export type PipelineApprovalDecision = 'pending' | 'approved' | 'rejected';
+
+export interface PipelineApproval {
+  decision: PipelineApprovalDecision;
+  note?: string;
+  reviewer?: string;
+  decided_at?: string;
+}
+
+export interface PipelineStageLog {
+  at: string;
+  message: string;
+}
+
+export interface PipelineStage {
+  stage_key: string;
+  agent_id: number;
+  label: string;
+  status: PipelineStageStatus;
+  inputs?: unknown;
+  outputs?: unknown;
+  approval: PipelineApproval;
+  logs: PipelineStageLog[];
+  started_at?: string;
+  updated_at?: string;
+}
+
+export interface PipelineState {
+  status: 'idle' | 'running' | 'waiting_approval' | 'success' | 'error';
+  active: boolean;
+  stages: PipelineStage[];
+  tender?: PipelineTenderImportResult;
+  /** 当前生效的编排器；langgraph 表示走 Python 图编排，builtin 表示内置编排器。 */
+  orchestrator?: 'langgraph' | 'builtin';
+  /** 本轮运行的标识；内置编排器没有 run 概念，返回 null。 */
+  runId?: string | null;
+}
+
+export interface PipelineTenderImportResult {
+  success: boolean;
+  message: string;
+  fileName?: string;
+  chars?: number;
+  parserLabel?: string;
+}
+
+export interface PipelineExportResult {
+  success: boolean;
+  message: string;
+  path?: string;
+  canceled?: boolean;
+  warnings?: string[];
+}
+
 export interface YibiaoBridge {
   appName: string;
   platform: string;
@@ -901,6 +957,15 @@ export interface YibiaoBridge {
     startFeasibilityHumanWriting: (payload?: unknown) => Promise<unknown>;
     getActiveTasks: () => Promise<TaskEventTask[]>;
     onTaskEvent: <TState = unknown, TRejectionCheckState = unknown, TDuplicateCheckState = unknown>(callback: (event: TaskEvent<TState, TRejectionCheckState, TDuplicateCheckState>) => void) => () => void;
+  };
+  pipeline: {
+    start: (payload?: { projectOverview?: string; companyProfile?: string }) => Promise<PipelineState>;
+    approve: (payload: { stageKey: string; note?: string }) => Promise<PipelineState>;
+    reject: (payload: { stageKey: string; note?: string }) => Promise<PipelineState>;
+    getState: () => Promise<PipelineState>;
+    importTender: () => Promise<PipelineTenderImportResult>;
+    exportDraft: () => Promise<PipelineExportResult>;
+    onEvent: (callback: (state: PipelineState) => void) => () => void;
   };
   export: {
     exportWord: (payload: unknown) => Promise<WordExportResult>;

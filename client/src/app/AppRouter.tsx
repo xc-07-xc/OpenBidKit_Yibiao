@@ -17,6 +17,7 @@ import ResourcesPage from '../features/resources/pages/ResourcesPage';
 import PluginsPage from '../features/plugins/pages/PluginsPage';
 import SettingsPage from '../features/settings/pages/SettingsPage';
 import TechnicalPlanHome from '../features/technical-plan/pages/TechnicalPlanHome';
+import PipelineHome from '../features/pipeline/pages/PipelineHome';
 import FeasibilityReportHome from '../features/feasibility-report/pages/FeasibilityReportHome';
 import SecondaryMenuPage from '../shared/ui/SecondaryMenuPage';
 
@@ -44,6 +45,8 @@ function AppRouter({ activeSection, developerMode, onDeveloperModeChange, onSect
   switch (activeSection) {
     case 'technical-plan':
       return <TechnicalPlanHome registerLeaveGuard={registerLeaveGuard} />;
+    case 'pipeline':
+      return <PipelineHome />;
     case 'feasibility-report':
       return <FeasibilityReportHome registerLeaveGuard={registerLeaveGuard} />;
     case 'document-knowledge-base':

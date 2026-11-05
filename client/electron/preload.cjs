@@ -357,6 +357,19 @@ const bridge = {
       return () => ipcRenderer.removeListener('tasks:event', listener);
     },
   },
+  pipeline: {
+    start: (payload) => ipcRenderer.invoke('pipeline:start', payload),
+    approve: (payload) => ipcRenderer.invoke('pipeline:approve', payload),
+    reject: (payload) => ipcRenderer.invoke('pipeline:reject', payload),
+    getState: () => ipcRenderer.invoke('pipeline:get-state'),
+    importTender: () => ipcRenderer.invoke('pipeline:import-tender'),
+    exportDraft: () => ipcRenderer.invoke('pipeline:export-word'),
+    onEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('pipeline:event', listener);
+      return () => ipcRenderer.removeListener('pipeline:event', listener);
+    },
+  },
   export: {
     exportWord: (payload) => ipcRenderer.invoke('export:word', payload),
     openFile: (filePath) => ipcRenderer.invoke('export:open-file', filePath),

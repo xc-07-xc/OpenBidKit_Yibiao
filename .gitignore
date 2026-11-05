@@ -277,3 +277,7 @@ logs/
 
 # 企业微信群聊导出工具本地环境和敏感产物
 scripts/wecom_chat_export/
+
+# LangGraph sidecar 构建产物（本地构建，不进仓库）
+client/vendor/langgraph-sidecar/
+agent-langgraph/build/

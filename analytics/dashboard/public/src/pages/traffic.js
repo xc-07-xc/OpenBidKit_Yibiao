@@ -4,6 +4,7 @@ import { state } from '../state.js';
 
 const pageLabels = {
   'bid-generation': '内容生成',
+  'pipeline': '多 Agent 流水线',
   'technical-plan': '投标文件',
   'existing-plan-expansion': '投标文件 - 已有方案扩写',
   'technical-plan/document-analysis': '投标文件 - 上传招标文件',

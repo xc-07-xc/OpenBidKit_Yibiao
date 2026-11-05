@@ -4,7 +4,7 @@
 -- 1. 本文件用于开源开发者阅读、评审和排查问题，展示 workspace/yibiao.sqlite 的目标完整表结构。
 -- 2. 用户运行客户端时不需要手动执行本文件。
 -- 3. 客户端运行时建表和升级以 Electron Main 侧 migration 代码为准。
--- 4. 当前运行代码已落地 technical_plan_* v1、duplicate_check_* / rejection_check_* v2、knowledge_* v3、technical_plan_global_fact_groups v4、标段兼容 v5/v6、标段选择 v7、旧待选择标段兼容字段 v8、工作流类型和原方案文件状态 v9、招标解析项选择配置 v10、知识库排序 v11、废标项检查多投标文件 v12、已有方案目录配置 v13、多标段优化状态 v14、导出模板库 v15、多招标文件 v16、全文图片编排 v17、目录字数控制 v18、全局事实补全模式 v22、可行性研究报告 v23、官方 API 开票信息 v24、统一生成配置 v25、单企业资信库 v26、导出模板样式范围 v32、暗标合规检查 v38、规则和页码应答依据 v43、资信库企业资料补充字段 v44 目标结构。
+-- 4. 当前运行代码已落地 technical_plan_* v1、duplicate_check_* / rejection_check_* v2、knowledge_* v3、technical_plan_global_fact_groups v4、标段兼容 v5/v6、标段选择 v7、旧待选择标段兼容字段 v8、工作流类型和原方案文件状态 v9、招标解析项选择配置 v10、知识库排序 v11、废标项检查多投标文件 v12、已有方案目录配置 v13、多标段优化状态 v14、导出模板库 v15、多招标文件 v16、全文图片编排 v17、目录字数控制 v18、全局事实补全模式 v22、可行性研究报告 v23、官方 API 开票信息 v24、统一生成配置 v25、单企业资信库 v26、导出模板样式范围 v32、暗标合规检查 v38、规则和页码应答依据 v43、资信库企业资料补充字段 v44、多 Agent 流水线阶段黑板 v45 目标结构。
 -- 5. 每次表结构调整后，需要同步更新本文件和 runtime migration 版本。
 -- 6. 本文件不保存历史版本，每次更新都写入最新目标完整结构。
 
@@ -1165,3 +1165,17 @@ CREATE TABLE IF NOT EXISTS blind_check_fix_groups (
 
 CREATE INDEX IF NOT EXISTS idx_blind_check_fix_groups_order
 ON blind_check_fix_groups(sort_order);
+
+-- v45 多 Agent 流水线阶段黑板：各阶段产物、人工闸门审批与执行日志
+CREATE TABLE IF NOT EXISTS pipeline_stages (
+  stage_key TEXT PRIMARY KEY,
+  agent_id INTEGER NOT NULL DEFAULT 0,
+  label TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  inputs_json TEXT,
+  outputs_json TEXT,
+  approval_json TEXT,
+  logs_json TEXT,
+  started_at TEXT,
+  updated_at TEXT
+);
