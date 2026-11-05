@@ -307,6 +307,14 @@ export default function PipelineHome() {
       ? (consistencyOut._metrics as Record<string, unknown>)
       : {};
   const reworkRounds = typeof reworkMetrics.reworkRounds === 'number' ? reworkMetrics.reworkRounds : null;
+  const reworkHistory = Array.isArray(reworkMetrics.history)
+    ? (reworkMetrics.history as Array<{ round?: number; score?: number | null; highCount?: number }>)
+    : [];
+  const firstReworkScore = typeof reworkHistory[0]?.score === 'number' ? reworkHistory[0].score : null;
+  const scoreDelta = firstReworkScore !== null && score !== null ? `${firstReworkScore} → ${score}` : null;
+  const openHighIssues = Array.isArray(consistencyOut.issues)
+    ? (consistencyOut.issues as Array<{ severity?: string }>).filter((issue) => issue?.severity === 'high').length
+    : 0;
 
   return (
     <div className="pipeline-page">
@@ -376,6 +384,11 @@ export default function PipelineHome() {
               导出投标文档（Word）
             </button>
             {pipelineActive ? <span className="pipeline-active-hint">流水线执行中，请等待阶段结果或闸门确认</span> : null}
+            {canExport && passed === false ? (
+              <span className="pipeline-qc-warning">
+                质检未通过{openHighIssues ? `（${openHighIssues} 项 high）` : ''}，导出的 Word 仅作草稿，请人工复核后再投标。
+              </span>
+            ) : null}
           </div>
         </section>
 
@@ -389,12 +402,16 @@ export default function PipelineHome() {
             <div className="pipeline-metric">
               <span className="pipeline-metric-label">一致性评分</span>
               <span className="pipeline-metric-value">{score === null ? '—' : score}</span>
-              <span className="pipeline-metric-sub">{passed === null ? '待质检' : passed ? '质检通过' : '质检未通过'}</span>
+              <span className="pipeline-metric-sub">
+                {passed === null ? '待质检' : passed ? '质检通过' : openHighIssues ? `未通过（${openHighIssues} 项 high）` : '未通过'}
+              </span>
             </div>
             <div className="pipeline-metric">
               <span className="pipeline-metric-label">自动返工轮次</span>
               <span className="pipeline-metric-value">{reworkRounds === null ? '0' : reworkRounds}</span>
-              <span className="pipeline-metric-sub">质检不通过自动回退整改</span>
+              <span className="pipeline-metric-sub">
+                {reworkRounds ? (scoreDelta ? `质检分 ${scoreDelta}` : '质检不通过自动回退整改') : '质检通过，未触发返工'}
+              </span>
             </div>
           </section>
         ) : null}

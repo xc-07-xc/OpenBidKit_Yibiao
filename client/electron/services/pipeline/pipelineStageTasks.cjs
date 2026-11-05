@@ -40,6 +40,19 @@ function feedbackSection(context) {
   return notes ? `\n【上一轮质检反馈，本轮必须优先回应并逐条消除】\n${notes}\n` : '';
 }
 
+// 返工轮次把上一轮成稿回传给生成阶段，让模型只改受影响章节，而不是整篇重写。
+function previousDraftSection(context) {
+  const draft = context?.previousDraft;
+  if (!draft || typeof draft !== 'object') return '';
+  const sections = Array.isArray(draft.sections) ? draft.sections : [];
+  if (!sections.length) return '';
+  const body = sections
+    .map((section) => `## ${String(section.heading || '').trim()}\n${String(section.content || '').trim()}`)
+    .join('\n\n');
+  if (!body.trim()) return '';
+  return `\n【上一轮成稿：本轮只重写质检反馈涉及的章节，其余章节逐字保留并原样输出】\n${body.slice(0, 20000)}\n`;
+}
+
 function makeValidator({ outputFile, schema, normalize }) {
   const validate = ajv.compile(schema);
   return function validateOutput(content) {
@@ -329,9 +342,11 @@ const STAGE_TASKS = {
         '1. 不编造资质、业绩、人员、奖项、检测报告等需要证明的材料；',
         '2. 上游缺少支撑材料的位置，用明确占位提示（如【待补充：…】）标出，不要虚构；',
         '3. 章节标题与内容对应上游技术分析 outline；',
-        '4. 语言为正式投标书面语，不出现口语化表述。',
+        '4. 语言为正式投标书面语，不出现口语化表述；',
+        '5. 若本次带【上一轮成稿】与【质检反馈】，只重写反馈涉及的章节，其余章节必须逐字保留并原样返回，输出仍要包含全部章节。',
         '',
         `上游产物：\n${upstream}`,
+        previousDraftSection(context),
         feedbackSection(context),
         knowledgeSection(context),
         '',
@@ -369,6 +384,8 @@ const STAGE_TASKS = {
         '2. 问题按严重程度分级 high/medium/low；',
         '3. 每条问题给出定位范围与修改建议；score 为 0-100 的一致性评分，存在 high 级问题时 passed 应为 false；',
         '4. 每条问题必须标注 category：consistency 表示口径/一致性错误（如与招标要求冲突、前后矛盾、承诺与响应不符，可由生成 Agent 自纠）；missing_material 表示材料缺失/占位（如缺报价、资质、业绩、人员、证书等外部输入，需人工补充材料，不能靠自纠消除）。',
+        '5. 逐条核对上游「实质性条款」与「评分办法」：成稿中未明确响应、只用套话带过或整条缺失的，记 high 且 category=consistency，不要归入 missing_material；',
+        '6. scope 写成成稿中对应的章节标题（定位不到章节时写“全局”），生成阶段会按 scope 定点重写。',
         '',
         `上游产物：\n${upstream}`,
         '',
@@ -434,6 +451,8 @@ function createPipelineStageRunner({ agentService, stageKey }) {
         projectOverview: ctx.context?.projectOverview,
         companyProfile: ctx.context?.companyProfile,
         tenderText: ctx.context?.tenderText,
+        feedbackNotes: ctx.context?.feedbackNotes,
+        previousDraft: ctx.context?.previousDraft,
         upstream: ctx.upstream,
       },
       onActivity: (event) => {

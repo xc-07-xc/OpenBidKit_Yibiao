@@ -119,6 +119,12 @@
   color: var(--yb-text-soft);
 }
 
+.pipeline-qc-warning {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #b45309;
+}
+
 .pipeline-control-tender {
   display: flex;
   align-items: center;

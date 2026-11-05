@@ -70,13 +70,22 @@ def build_run_node(stage_key: str, executor: Any):
                     for issue in feedback_issues
                 )
                 update["rework_count"] = rework_count + 1
-                # 把可自纠的一致性问题回传给生成阶段，并清空旧成稿，强制本轮重新生成。
-                update["context"] = {**context, "feedbackNotes": feedback_notes}
+                # 回传质检反馈与上一轮成稿：生成节点据此只改受影响章节，其余保持原样；
+                # 清空旧成稿是为了让图重新执行 generate 节点，而不是复用旧产物。
+                previous_draft = new_outputs.get("generate")
+                update["context"] = {
+                    **context,
+                    "feedbackNotes": feedback_notes,
+                    "previousDraft": previous_draft if isinstance(previous_draft, dict) else {},
+                }
                 update["outputs"] = {**new_outputs, "generate": {}}
                 update["logs"] = logs + [
                     {
                         "stage": "generate",
-                        "message": f"质检发现 {len(consistency_high)} 项一致性 high 问题，进入第 {rework_count + 1} 轮返工重生成。",
+                        "message": (
+                            f"质检发现 {len(consistency_high)} 项一致性 high 问题，进入第 {rework_count + 1} 轮返工；"
+                            "已回传上一轮成稿，本轮只重写受影响章节。"
+                        ),
                         "at": _now(),
                     }
                 ]

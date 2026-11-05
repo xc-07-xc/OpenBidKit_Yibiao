@@ -65,7 +65,7 @@ START → parse_run → parse_gate → qualification_run → qualification_gate
 
 - 并行：technical 与 legal 由 qualification 闸门扇出并行，汇合到 generate。
 - 人工闸门：parse / qualification / legal / generate 产出后 `interrupt()`，等人工 approve/reject 恢复；reject 清空本阶段产物并自环回到 `<stage>_run` 重跑。
-- 回退：consistency 检出可自纠的 high 一致性问题，累加 `rework_count`，把问题清单写成 `feedbackNotes` 回传并清空旧成稿，回到 generate 重跑；上限 `MAX_REWORK_ROUNDS=2`，超限结束（转人工复核）。
+- 回退：consistency 检出可自纠的 high 一致性问题，累加 `rework_count`，把问题清单写成 `feedbackNotes`、把上一轮成稿写成 `previousDraft` 回传，生成阶段只重写受影响章节；上限 `MAX_REWORK_ROUNDS=2`，超限结束（转人工复核）。
 - 材料缺失类（缺报价/资质/业绩/人员/证书等）只标记，不自动回退。
 
 ## 对接契约

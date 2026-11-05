@@ -83,6 +83,8 @@ function createPipelineOrchestrator({ pipelineStore, runners, emit, knowledgeBas
   let active = false;
   let abortController = null;
   let currentContext = {};
+  // 返工评分轨迹：每轮返工记录当时的质检分与 high 问题数。
+  const reworkHistory = [];
 
   function broadcast() {
     const state = getState();
@@ -100,11 +102,15 @@ function createPipelineOrchestrator({ pipelineStore, runners, emit, knowledgeBas
     };
   }
 
-  function recordReworkMetrics(stageKey, reworkCount) {
+  function recordReworkMetrics(stageKey, reworkCount, history) {
     const stage = pipelineStore.loadStage(stageKey);
     if (!stage) return;
     const outputs = stage.outputs && typeof stage.outputs === 'object' ? stage.outputs : {};
-    const metrics = { ...(outputs._metrics && typeof outputs._metrics === 'object' ? outputs._metrics : {}), reworkRounds: reworkCount };
+    const metrics = {
+      ...(outputs._metrics && typeof outputs._metrics === 'object' ? outputs._metrics : {}),
+      reworkRounds: reworkCount,
+      history: Array.isArray(history) ? history : [],
+    };
     pipelineStore.patchStage(stageKey, { outputs: { ...outputs, _metrics: metrics } });
   }
 
@@ -247,6 +253,18 @@ function createPipelineOrchestrator({ pipelineStore, runners, emit, knowledgeBas
           if (reworkCount < MAX_REWORK_ROUNDS) {
             reworkCount += 1;
             context.feedbackNotes = formatReworkFeedback(consistencyStage.outputs);
+            // 回传上一轮成稿，生成阶段只重写受影响章节；清空黑板成稿仍由生成 Runner 覆盖写入。
+            const generateStage = pipelineStore.loadStage('generate');
+            if (generateStage?.outputs && typeof generateStage.outputs === 'object') {
+              context.previousDraft = generateStage.outputs;
+            }
+            const score = Number(consistencyStage.outputs?.score);
+            reworkHistory.push({
+              round: reworkCount,
+              score: Number.isFinite(score) ? score : null,
+              highCount: highConsistency.length,
+              at: new Date().toISOString(),
+            });
             pipelineStore.appendLog(
               'consistency',
               `质检未通过，第 ${reworkCount}/${MAX_REWORK_ROUNDS} 轮自动回退生成阶段整改（${highConsistency.length} 项一致性问题）。`,
@@ -269,7 +287,7 @@ function createPipelineOrchestrator({ pipelineStore, runners, emit, knowledgeBas
           );
           broadcast();
         }
-        recordReworkMetrics('consistency', reworkCount);
+        recordReworkMetrics('consistency', reworkCount, reworkHistory);
       }
 
       segmentIndex += 1;
@@ -281,6 +299,7 @@ function createPipelineOrchestrator({ pipelineStore, runners, emit, knowledgeBas
   function start(payload) {
     if (active) return getState();
     currentContext = payload || {};
+    reworkHistory.length = 0;
     abortController = new AbortController();
     active = true;
     initializeStages(currentContext);

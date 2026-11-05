@@ -160,3 +160,50 @@ test('未启动时调用 approve 给出明确错误', async () => {
   await assert.rejects(() => orchestrator.approve('parse', ''), /请先启动流水线/);
   orchestrator.dispose();
 });
+
+test('返工轮次写入评分轨迹，供前端展示返工前后分数', async () => {
+  const store = createFakeStore();
+  const snapshot = {
+    run_id: 'run-rework',
+    status: 'running',
+    active: true,
+    outputs: {
+      generate: { sections: [{ heading: '技术方案', content: '旧稿' }] },
+      consistency: {
+        score: 64,
+        passed: false,
+        issues: [
+          { scope: '技术方案', severity: 'high', category: 'consistency', description: '工期口径不一致' },
+          { scope: '报价', severity: 'low', category: 'consistency', description: '措辞可优化' },
+        ],
+      },
+    },
+    upstream: {},
+    logs: [{ stage: 'generate', message: '进入第 1 轮返工' }],
+    rework_count: 1,
+    approval: {},
+    next: ['generate_run'],
+    interrupts: [],
+    error: null,
+  };
+  const bridge = createFakeBridge({
+    async start() {
+      return snapshot;
+    },
+    async getState() {
+      return snapshot;
+    },
+  });
+  const orchestrator = createLangGraphOrchestrator({ pipelineStore: store, knowledgeBaseStore: null, app: null, emit: null, bridge });
+
+  await orchestrator.start({});
+  try {
+    const consistency = orchestrator.getState().stages.find((stage) => stage.stage_key === 'consistency');
+    assert.equal(consistency.outputs._metrics.reworkRounds, 1);
+    assert.equal(consistency.outputs._metrics.history.length, 1);
+    assert.equal(consistency.outputs._metrics.history[0].score, 64);
+    assert.equal(consistency.outputs._metrics.history[0].highCount, 1);
+  } finally {
+    orchestrator.dispose();
+  }
+});

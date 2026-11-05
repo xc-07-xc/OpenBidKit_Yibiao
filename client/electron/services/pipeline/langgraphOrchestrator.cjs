@@ -41,6 +41,9 @@ function createLangGraphOrchestrator({ pipelineStore, knowledgeBaseStore, app, e
   let pollTimer = null;
   let polling = false;
   let lastErrorText = '';
+  // 返工评分轨迹：每触发一轮返工记录当时的质检分与 high 问题数，供前端展示“返工前 → 返工后”。
+  let scoreHistory = [];
+  let lastReworkCount = 0;
 
   function getState() {
     const stages = pipelineStore.loadAll();
@@ -136,15 +139,29 @@ function createLangGraphOrchestrator({ pipelineStore, knowledgeBaseStore, app, e
       }
     }
 
-    // 返工轮次写入 consistency 产物指标，供前端指标面板读取。
+    // 返工轮次与评分轨迹写入 consistency 产物指标，供前端指标面板读取。
     if (Number.isFinite(snapshot.rework_count)) {
       const consistency = pipelineStore.loadStage('consistency');
       if (consistency?.outputs && typeof consistency.outputs === 'object') {
+        const rounds = Number(snapshot.rework_count);
+        if (rounds > lastReworkCount) {
+          const score = Number(consistency.outputs.score);
+          const issues = Array.isArray(consistency.outputs.issues) ? consistency.outputs.issues : [];
+          const highCount = issues.filter((issue) => issue && issue.severity === 'high').length;
+          scoreHistory.push({
+            round: rounds,
+            score: Number.isFinite(score) ? score : null,
+            highCount,
+            at: new Date().toISOString(),
+          });
+          lastReworkCount = rounds;
+        }
         const metrics = {
           ...(consistency.outputs._metrics && typeof consistency.outputs._metrics === 'object'
             ? consistency.outputs._metrics
             : {}),
-          reworkRounds: snapshot.rework_count,
+          reworkRounds: rounds,
+          history: scoreHistory,
         };
         pipelineStore.patchStage('consistency', {
           outputs: { ...consistency.outputs, _metrics: metrics },
@@ -230,6 +247,8 @@ function createLangGraphOrchestrator({ pipelineStore, knowledgeBaseStore, app, e
     const context = payload || {};
     runId = createRunId();
     lastErrorText = '';
+    scoreHistory = [];
+    lastReworkCount = 0;
     initializeStages(context);
     broadcast();
     const snapshot = await bridge.start(runId, context);
