@@ -51,3 +51,20 @@ A：应用重启后上一轮运行无法续跑，重新启动流水线即可（�
 
 **Q：阶段产物去哪了？**
 A：同时写入两处：工作区 `technical-plan/<stage>.json`，以及知识库「流水线产物」文件夹。
+
+## 验收自检
+
+跑完一轮后，在 `client` 目录执行：
+
+```powershell
+npm run inspect:pipeline
+```
+
+脚本读取本地 SQLite 黑板（`%APPDATA%\yibiao-client\workspace\yibiao.sqlite`），输出每个阶段的状态、耗时、闸门决议与最近日志，并自动核对：
+
+- 6 个阶段是否全部 success
+- 4 个闸门（解析 / 资格 / 法规 / 生成）是否都有审批
+- 是否发生过人工打回
+- 自动返工轮次是否 ≥ 1
+
+全部通过时退出码为 0，可直接作为演示前的自检记录；也可以用 `npm run inspect:pipeline -- --json` 输出机器可读结果。

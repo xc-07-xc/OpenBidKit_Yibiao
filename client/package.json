@@ -18,6 +18,7 @@
     "prepare-agent-tools": "node scripts/prepare-agent-tools.cjs",
     "prepare-openxml-helper": "node scripts/prepare-openxml-helper.cjs",
     "prepare-langgraph-sidecar": "node scripts/prepare-langgraph-sidecar.cjs",
+    "inspect:pipeline": "node --disable-warning=ExperimentalWarning scripts/inspect-pipeline-run.cjs",
     "verify-agent-tools": "node scripts/verify-agent-tools.cjs",
     "smoke:electron-native": "electron scripts/electron-native-smoke.cjs",
     "start": "electron ."
