@@ -94,7 +94,16 @@ function registerPipelineExportIpc({ getOrchestrator, exportService }) {
     const parseStage = stages.find((stage) => stage.stage_key === 'parse');
     const parseSummary = parseStage?.outputs?.summary || '';
     const projectName = parseSummary ? `投标文件_${parseSummary.slice(0, 24)}` : '投标技术文件';
-    return await exportService.exportWord({ project_name: projectName, outline });
+    const result = await exportService.exportWord({ project_name: projectName, outline });
+    // 质检未通过仍允许导出，但把风险随结果带回，避免调用方把草稿当终稿。
+    const consistency = stages.find((stage) => stage.stage_key === 'consistency');
+    const qc = consistency && consistency.outputs && typeof consistency.outputs === 'object' ? consistency.outputs : null;
+    if (qc && qc.passed === false && result && typeof result === 'object') {
+      const highCount = Array.isArray(qc.issues) ? qc.issues.filter((issue) => issue && issue.severity === 'high').length : 0;
+      const warning = `质检未通过${highCount ? `（${highCount} 项 high）` : ''}：导出文档仅供草稿，请人工复核后再投标。`;
+      return { ...result, warnings: [...(Array.isArray(result.warnings) ? result.warnings : []), warning] };
+    }
+    return result;
   });
 }
 

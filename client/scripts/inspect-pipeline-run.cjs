@@ -145,6 +145,15 @@ function analyze(stages) {
   const rejected = gates.some((gate) => gate.decision === 'rejected')
     || allLogs.some((log) => /人工打回|打回重跑/.test(String(log.message || '')));
 
+  const qcScore = Number(consistency?.outputs?.score);
+  const qcPassed = typeof consistency?.outputs?.passed === 'boolean' ? consistency.outputs.passed : null;
+  const highIssues = Array.isArray(consistency?.outputs?.issues)
+    ? consistency.outputs.issues.filter((issue) => issue && issue.severity === 'high').length
+    : 0;
+  const scoreHistory = Array.isArray(metrics?.history)
+    ? metrics.history.map((item) => ({ round: item?.round, score: item?.score, highCount: item?.highCount }))
+    : [];
+
   const checks = [
     {
       id: 'stages',
@@ -172,7 +181,7 @@ function analyze(stages) {
     },
   ];
 
-  return { gates, stages, reworkRounds, rejected, checks };
+  return { gates, stages, reworkRounds, rejected, checks, qc: { score: Number.isFinite(qcScore) ? qcScore : null, passed: qcPassed, highIssues, scoreHistory } };
 }
 
 function render(dbPath, stages, result) {
@@ -200,6 +209,14 @@ function render(dbPath, stages, result) {
   }
   lines.push('');
   lines.push(`自动返工轮次：${result.reworkRounds}`);
+  const qc = result.qc;
+  const scoreText = qc.score === null ? '—' : String(qc.score);
+  const qcText = qc.passed === null ? '待质检' : qc.passed ? '通过' : `未通过（尚有 ${qc.highIssues} 项 high）`;
+  lines.push(`质检结果：${qcText}，评分 ${scoreText}`);
+  if (qc.scoreHistory.length) {
+    const chain = [...qc.scoreHistory.map((item) => (item.score === null ? '—' : item.score)), scoreText].join(' → ');
+    lines.push(`评分轨迹：${chain}`);
+  }
   lines.push('');
   lines.push('检查项：');
   for (const check of result.checks) {
@@ -233,6 +250,7 @@ function main() {
     console.log(JSON.stringify({
       db: args.db,
       reworkRounds: result.reworkRounds,
+      qc: result.qc,
       checks: result.checks,
       gates: result.gates,
       stages: stages.map((stage) => ({ stage_key: stage.stage_key, status: stage.status, approval: stage.approval })),
