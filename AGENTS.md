@@ -32,11 +32,14 @@
 - 技术方案节点 `id` 是程序分配的稳定 UUID；`number` 按目录树顺序计算，仅供展示和章节编号。数据库以 `node_id` 关联、`parent_node_id` 表示父子关系、`sort_order` 表示同级顺序；不得从 ID 推算编号、层级或顺序。
 - Mermaid 只用于技术方案正文生成：Agent 生成源码后，由 Main 的 `localImageRenderService.cjs` 立即在本地转成图片，正文以 figure 引用。Markdown 中的 `mermaid` 代码块不再预览或转图，按普通代码块处理。
 - `MarkdownRenderer` 当前默认允许原始 HTML；AI、Agent、远程公告等非本地可信内容必须显式传 `allowRawHtml={false}`，只有明确需要保留本地解析 HTML 时才开启。
+- 多 Agent 流水线的阶段/角色定义目前是三处镜像（`client/electron/services/pipeline/pipelineAgentConfig.cjs`、`agent-langgraph/app/config.py`、`client/src/features/pipeline/types.ts`），改阶段、闸门、依赖或返工上限必须三处同步；`pipeline_stages` 是流水线权威状态，Python 只做图编排，不直接读写 SQLite。详细边界见 `client/开发说明.md` 的「多 Agent 流水线（LangGraph）」一节。
 
 ## 聚焦验证
 - 改 Renderer/TypeScript：`cd client; npm run build`。
 - 改 Electron Main/preload：先在 `client/` 下运行 `node --check electron\preload.cjs` 或对应 `.cjs` 文件，再跑 `npm run build`；涉及窗口/IPC 还要 `npm run dev` 手动打开验证。
 - 改 SQLite Store、migration 或 native 模块：增加 `npm run smoke:electron-native`。
+- 改流水线 Python（`agent-langgraph/`）：`python smoke_graph.py`、`python smoke_server.py`；改依赖或打包后重建 sidecar 再 `python smoke_sidecar.py`。
+- 改流水线编排/IPC：`node --check` 对应 `.cjs`，`node --test electron/services/pipeline/langgraphOrchestrator.test.cjs`，再跑 `npm run build` 与 `npm run inspect:pipeline`。
 - 改依赖：`cd client; npm audit`。
 - `npm run build` 可能只有既有 chunk 体积警告；不要把它当失败，除非命令退出非 0。
 
