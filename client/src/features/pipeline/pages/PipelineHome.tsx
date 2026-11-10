@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { trackPageView } from '../../../shared/analytics/analytics';
 import { EmptyState, InlineSpinner, useToast } from '../../../shared/ui';
-import type { PipelineStage, PipelineState } from '../../../shared/types/ipc';
+import type { PipelineSchemaResult, PipelineStage, PipelineState } from '../../../shared/types/ipc';
 import { AGENT_NAMES, PIPELINE_STATUS_LABELS, STATUS_META, TEAM_CONTRACTS, type TeamContract } from '../types';
 
 function readStageOutputs(stage: PipelineStage): Record<string, unknown> {
@@ -76,8 +76,41 @@ function StageCard({ index, stage, note, busy, onNoteChange, onApprove, onReject
   const meta = STATUS_META[stage.status] ?? STATUS_META.pending;
   const approval = stage.approval;
   const isWaiting = stage.status === 'waiting_approval';
+  // 终审闸门没有执行节点：通过即签发成稿并解锁导出，打回则退回生成节点按意见重写。
+  const isFinalGate = stage.stage_key === 'final_approval';
   const recentLogs = stage.logs.slice(-3);
   const outputsJson = formatOutputsJson(stage.outputs);
+  // 一致性阶段的逐条比对报告：人工复审时直接看表，不用翻 JSON。
+  const comparisonRows = Array.isArray((stage.outputs as Record<string, unknown> | null)?.comparison)
+    ? ((stage.outputs as Record<string, unknown>).comparison as Array<{
+        item?: string;
+        required?: string;
+        status?: string;
+        evidence?: string;
+        anchor?: string;
+      }>)
+    : [];
+  const comparisonStats = comparisonRows.reduce(
+    (acc, row) => {
+      if (row.status === 'responded') acc.responded += 1;
+      else if (row.status === 'partial') acc.partial += 1;
+      else if (row.status === 'missing') acc.missing += 1;
+      else acc.na += 1;
+      return acc;
+    },
+    { responded: 0, partial: 0, missing: 0, na: 0 },
+  );
+  const comparisonTone: Record<string, string> = {
+    responded: '已响应',
+    partial: '部分响应',
+    missing: '未响应',
+    'n/a': '不适用',
+  };
+  // 复审模式没有招标文件条款，比对基准是成稿自身，结论只能用于发现内部不一致。
+  const auditMeta = (stage.outputs as Record<string, unknown> | null)?._audit as
+    | { baselineMissing?: boolean }
+    | undefined;
+  const baselineMissing = auditMeta?.baselineMissing === true;
 
   return (
     <section className={`pipeline-stage ${meta.tone}`}>
@@ -99,6 +132,38 @@ function StageCard({ index, stage, note, busy, onNoteChange, onApprove, onReject
         <details className="pipeline-stage-outputs">
           <summary>查看阶段产物</summary>
           <pre>{outputsJson}</pre>
+        </details>
+      ) : null}
+
+      {comparisonRows.length > 0 ? (
+        <details className="pipeline-stage-outputs" open>
+          <summary>
+            逐条比对报告（{comparisonRows.length} 条）
+            <span className="pipeline-comparison-legend">
+              已响应 {comparisonStats.responded} · 部分响应 {comparisonStats.partial} · 未响应{' '}
+              {baselineMissing ? '—（无招标基准）' : comparisonStats.missing}
+              {comparisonStats.na > 0 ? ` · 评分项不适用 ${comparisonStats.na}` : ''}
+            </span>
+          </summary>
+          {baselineMissing ? (
+            <p className="pipeline-comparison-note">
+              复审模式未加载招标文件条款，比对基准是成稿自身，只能发现内部不一致，不能替代对招标文件的响应性核查。
+            </p>
+          ) : null}
+          <div className="pipeline-comparison">
+            {comparisonRows.slice(0, 40).map((row, rowIndex) => (
+              <div className="pipeline-comparison-row" key={`${row.item}-${rowIndex}`}>
+                <span className="pipeline-comparison-item">
+                  <em>{row.required || '要求'}</em>
+                  {row.item}
+                </span>
+                <span className={`pipeline-comparison-status is-${row.status === 'n/a' ? 'na' : row.status || 'missing'}`}>
+                  {comparisonTone[row.status || 'missing'] ?? '未响应'}
+                </span>
+                <span className="pipeline-comparison-evidence">{row.evidence || '—'}</span>
+              </div>
+            ))}
+          </div>
         </details>
       ) : null}
 
@@ -131,20 +196,22 @@ function StageCard({ index, stage, note, busy, onNoteChange, onApprove, onReject
           />
           <div className="pipeline-gate-actions">
             <button type="button" className="primary-action" disabled={busy} onClick={() => onApprove(stage.stage_key)}>
-              通过并进入下一阶段
+              {isFinalGate ? '终审通过并签发成稿' : '通过并进入下一阶段'}
             </button>
             <button type="button" className="danger-action" disabled={busy} onClick={() => onReject(stage.stage_key)}>
-              打回重跑本阶段
+              {isFinalGate ? '打回重写受影响章节' : '打回重跑本阶段'}
             </button>
           </div>
+          {isFinalGate ? (
+            <p className="pipeline-approval-note">通过后才会解锁「导出投标文档（Word）」，未签发前导出会被拦截。</p>
+          ) : null}
         </div>
       ) : null}
     </section>
   );
 }
 
-function TeamCard({ contract }: { contract: TeamContract }) {
-  return (
+function TeamCard({ contract }: { contract: TeamContract }) {  return (
     <article className="pipeline-team-card">
       <header className="pipeline-team-head">
         <span className="pipeline-team-role">{contract.role}</span>
@@ -191,6 +258,13 @@ export default function PipelineHome() {
   const [tenderInfo, setTenderInfo] = useState<{ fileName?: string; chars?: number; parserLabel?: string } | null>(null);
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // 辅线：人工上传/粘贴已写好的标书，跳过解析与生成，只跑一致性检查。
+  const [reviewText, setReviewText] = useState('');
+  const [reviewInfo, setReviewInfo] = useState<{ fileName?: string; chars?: number; parserLabel?: string } | null>(null);
+  const [pickingReview, setPickingReview] = useState(false);
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [schema, setSchema] = useState<PipelineSchemaResult | null>(null);
+  const [schemaLoading, setSchemaLoading] = useState(false);
 
   useEffect(() => {
     trackPageView('pipeline');
@@ -216,6 +290,40 @@ export default function PipelineHome() {
     };
   }, []);
 
+  const stages = state?.stages ?? [];
+  const pipelineActive = state?.active ?? false;
+  const pipelineStatus = state?.status ?? 'idle';
+  const isEmpty = stages.length === 0;
+
+  const generateStage = stages.find((item) => item.stage_key === 'generate');
+  const finalStage = stages.find((item) => item.stage_key === 'final_approval');
+  // 导出前置条件：生成阶段成功 + 终审已签发（人工确认）。
+  const exportReady = state?.exportReady === true || finalStage?.approval?.decision === 'approved';
+  const canExport = generateStage?.status === 'success' && exportReady;
+  const consistency = stages.find((item) => item.stage_key === 'consistency');
+  const consistencyOut = consistency ? readStageOutputs(consistency) : {};
+  const successCount = stages.filter((item) => item.status === 'success').length;
+  // 人工复审会跳过解析/资格/技术/法规，通过率只按实际执行的阶段算。
+  const countedStages = stages.filter((item) => item.status !== 'skipped');
+  const skippedCount = stages.length - countedStages.length;
+  const passRate = countedStages.length ? Math.round((successCount / countedStages.length) * 100) : null;
+  const score = typeof consistencyOut.score === 'number' ? consistencyOut.score : null;
+  const passed = typeof consistencyOut.passed === 'boolean' ? consistencyOut.passed : null;
+  const reworkMetrics =
+    consistencyOut._metrics && typeof consistencyOut._metrics === 'object'
+      ? (consistencyOut._metrics as Record<string, unknown>)
+      : {};
+  const reworkRounds = typeof reworkMetrics.reworkRounds === 'number' ? reworkMetrics.reworkRounds : null;
+  const reworkHistory = Array.isArray(reworkMetrics.history)
+    ? (reworkMetrics.history as Array<{ round?: number; score?: number | null; highCount?: number }>)
+    : [];
+  const firstReworkScore = typeof reworkHistory[0]?.score === 'number' ? reworkHistory[0].score : null;
+  const scoreDelta = firstReworkScore !== null && score !== null ? `${firstReworkScore} → ${score}` : null;
+  const openHighIssues = Array.isArray(consistencyOut.issues)
+    ? (consistencyOut.issues as Array<{ severity?: string }>).filter((issue) => issue?.severity === 'high').length
+    : 0;
+  const reviewChars = reviewText.trim().length;
+
   const handleImportTender = async () => {
     if (importing || pipelineActive) return;
     setImporting(true);
@@ -236,6 +344,10 @@ export default function PipelineHome() {
 
   const handleExportDraft = async () => {
     if (exporting || pipelineActive) return;
+    if (!exportReady) {
+      showToast('终审尚未签发：请先在「终审签发」闸门通过，确认成稿可提交后再导出。', 'info');
+      return;
+    }
     setExporting(true);
     try {
       const result = await window.yibiao.pipeline.exportDraft();
@@ -289,32 +401,63 @@ export default function PipelineHome() {
     }
   };
 
-  const stages = state?.stages ?? [];
-  const pipelineActive = state?.active ?? false;
-  const pipelineStatus = state?.status ?? 'idle';
-  const isEmpty = stages.length === 0;
+  const handlePickReviewDraft = async () => {
+    if (pickingReview || pipelineActive) return;
+    setPickingReview(true);
+    try {
+      const result = await window.yibiao.pipeline.pickReviewDraft();
+      if (result.success && result.text) {
+        setReviewText(result.text);
+        setReviewInfo({ fileName: result.fileName, chars: result.chars, parserLabel: result.parserLabel });
+        showToast(result.message || '标书已读取，可直接提交复审', 'success');
+      } else {
+        showToast(result.message || '读取标书失败', 'error');
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '读取标书失败', 'error');
+    } finally {
+      setPickingReview(false);
+    }
+  };
 
-  const generateStage = stages.find((item) => item.stage_key === 'generate');
-  const canExport = generateStage?.status === 'success';
-  const consistency = stages.find((item) => item.stage_key === 'consistency');
-  const consistencyOut = consistency ? readStageOutputs(consistency) : {};
-  const successCount = stages.filter((item) => item.status === 'success').length;
-  const passRate = stages.length ? Math.round((successCount / stages.length) * 100) : null;
-  const score = typeof consistencyOut.score === 'number' ? consistencyOut.score : null;
-  const passed = typeof consistencyOut.passed === 'boolean' ? consistencyOut.passed : null;
-  const reworkMetrics =
-    consistencyOut._metrics && typeof consistencyOut._metrics === 'object'
-      ? (consistencyOut._metrics as Record<string, unknown>)
-      : {};
-  const reworkRounds = typeof reworkMetrics.reworkRounds === 'number' ? reworkMetrics.reworkRounds : null;
-  const reworkHistory = Array.isArray(reworkMetrics.history)
-    ? (reworkMetrics.history as Array<{ round?: number; score?: number | null; highCount?: number }>)
-    : [];
-  const firstReworkScore = typeof reworkHistory[0]?.score === 'number' ? reworkHistory[0].score : null;
-  const scoreDelta = firstReworkScore !== null && score !== null ? `${firstReworkScore} → ${score}` : null;
-  const openHighIssues = Array.isArray(consistencyOut.issues)
-    ? (consistencyOut.issues as Array<{ severity?: string }>).filter((issue) => issue?.severity === 'high').length
-    : 0;
+  const handleSubmitReview = async () => {
+    if (submittingReview || pipelineActive) return;
+    const text = reviewText.trim();
+    if (!text) {
+      showToast('请先上传或粘贴需要复审的标书正文', 'info');
+      return;
+    }
+    setSubmittingReview(true);
+    try {
+      const next = await window.yibiao.pipeline.submitReview({
+        text,
+        fileName: reviewInfo?.fileName,
+        projectOverview: overview.trim(),
+        companyProfile: companyProfile.trim(),
+        strictConsistency: true,
+      });
+      setState(next);
+      showToast('已提交复审：跳过解析与生成，直接进入一致性检查', 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '提交复审失败', 'error');
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
+
+  const handleLoadSchema = async () => {
+    if (schemaLoading) return;
+    setSchemaLoading(true);
+    try {
+      const result = await window.yibiao.pipeline.getSchema();
+      setSchema(result);
+      if (!result.success) showToast(result.message || '节点输出结构不可用', 'error');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '节点输出结构不可用', 'error');
+    } finally {
+      setSchemaLoading(false);
+    }
+  };
 
   return (
     <div className="pipeline-page">
@@ -335,6 +478,11 @@ export default function PipelineHome() {
             >
               {state?.orchestrator === 'langgraph' ? 'LangGraph 编排' : '内置编排'}
             </span>
+            {state?.mode === 'review' ? (
+              <span className="pipeline-orchestrator is-langgraph" title="人工上传标书复审：跳过解析与生成，只跑一致性检查">
+                人工复审
+              </span>
+            ) : null}
             <span className={`pipeline-status pipeline-status-${pipelineStatus}`}>
               {PIPELINE_STATUS_LABELS[pipelineStatus] ?? pipelineStatus}
             </span>
@@ -384,6 +532,9 @@ export default function PipelineHome() {
               导出投标文档（Word）
             </button>
             {pipelineActive ? <span className="pipeline-active-hint">流水线执行中，请等待阶段结果或闸门确认</span> : null}
+            {!pipelineActive && generateStage?.status === 'success' && !exportReady ? (
+              <span className="pipeline-qc-warning">终审未签发：请先在「终审签发」闸门通过，导出 Word 才会解锁。</span>
+            ) : null}
             {canExport && passed === false ? (
               <span className="pipeline-qc-warning">
                 质检未通过{openHighIssues ? `（${openHighIssues} 项 high）` : ''}，导出的 Word 仅作草稿，请人工复核后再投标。
@@ -392,12 +543,63 @@ export default function PipelineHome() {
           </div>
         </section>
 
+        <section className="panel pipeline-control pipeline-review">
+          <header className="pipeline-review-head">
+            <h3>辅线：人工上传标书复审</h3>
+            <p>已有写好的标书？上传或粘贴正文即可，跳过解析与生成，直接跑一致性检查并输出比对报告。</p>
+          </header>
+          <div className="pipeline-control-tender">
+            <button
+              type="button"
+              className="secondary-action"
+              disabled={pickingReview || pipelineActive}
+              onClick={handlePickReviewDraft}
+            >
+              {pickingReview ? <InlineSpinner /> : null}
+              选择标书文件（Word / PDF / TXT）
+            </button>
+            {reviewInfo?.fileName ? (
+              <span className="pipeline-tender-hint">
+                已读取：{reviewInfo.fileName}（{reviewInfo.chars ? `${reviewInfo.chars} 字符` : ''}
+                {reviewInfo.parserLabel ? ` · ${reviewInfo.parserLabel}` : ''}）
+              </span>
+            ) : (
+              <span className="pipeline-tender-hint">也可以直接在下方粘贴正文，或修改上传后的文本再提交。</span>
+            )}
+          </div>
+          <label className="pipeline-control-label" htmlFor="pipeline-review-text">待复审标书正文</label>
+          <textarea
+            id="pipeline-review-text"
+            className="pipeline-control-input pipeline-review-text"
+            value={reviewText}
+            placeholder="粘贴或上传需要复核的投标文件正文，提交后只触发一致性检查 Agent"
+            onChange={(event) => setReviewText(event.target.value)}
+          />
+          <div className="pipeline-control-actions">
+            <button
+              type="button"
+              className="primary-action"
+              disabled={submittingReview || pipelineActive || reviewChars === 0}
+              onClick={handleSubmitReview}
+            >
+              {submittingReview ? <InlineSpinner /> : null}
+              提交复审（只跑一致性检查）
+            </button>
+            <span className="pipeline-tender-hint">
+              {reviewChars > 0 ? `当前正文 ${reviewChars} 字符` : '尚未提供正文'}
+            </span>
+          </div>
+        </section>
+
         {stages.length > 0 ? (
           <section className="pipeline-metrics">
             <div className="pipeline-metric">
               <span className="pipeline-metric-label">阶段通过率</span>
               <span className="pipeline-metric-value">{passRate === null ? '—' : `${passRate}%`}</span>
-              <span className="pipeline-metric-sub">{successCount}/{stages.length} 阶段通过</span>
+              <span className="pipeline-metric-sub">
+                {successCount}/{countedStages.length} 阶段通过
+                {skippedCount ? ` · ${skippedCount} 阶段跳过` : ''}
+              </span>
             </div>
             <div className="pipeline-metric">
               <span className="pipeline-metric-label">一致性评分</span>
@@ -426,6 +628,35 @@ export default function PipelineHome() {
               <TeamCard key={contract.agentId} contract={contract} />
             ))}
           </div>
+        </section>
+
+        <section className="pipeline-team pipeline-schema">
+          <header className="pipeline-team-title">
+            <h3>节点输出契约（JSON）</h3>
+            <p>每个节点产物的字段结构；前端据此渲染真实数据，也方便用假数据先画 UI。</p>
+          </header>
+          <div className="pipeline-control-actions">
+            <button type="button" className="secondary-action" disabled={schemaLoading} onClick={handleLoadSchema}>
+              {schemaLoading ? <InlineSpinner /> : null}
+              获取节点输出结构
+            </button>
+            {schema?.notes?.length ? <span className="pipeline-tender-hint">{schema.notes.join('；')}</span> : null}
+            {schema && !schema.success ? <span className="pipeline-qc-warning">{schema.message || '节点输出结构不可用'}</span> : null}
+          </div>
+          {schema?.nodes ? (
+            <div className="pipeline-schema-grid">
+              {Object.entries(schema.nodes).map(([key, spec]) => (
+                <details key={key} className="pipeline-stage-outputs">
+                  <summary>
+                    {spec.label}（{key} · Agent {spec.agent_id}）
+                  </summary>
+                  <p className="pipeline-stage-summary">{spec.description}</p>
+                  <pre>{JSON.stringify(spec.schema, null, 2)}</pre>
+                  <pre>{JSON.stringify(spec.example, null, 2)}</pre>
+                </details>
+              ))}
+            </div>
+          ) : null}
         </section>
 
         {isEmpty ? (

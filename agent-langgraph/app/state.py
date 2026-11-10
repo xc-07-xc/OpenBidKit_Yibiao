@@ -6,8 +6,11 @@
 - upstream: 上游阶段产物快照，供节点拼装提示词
 - logs: 阶段执行日志
 - rework_count: 自动整改轮次
+- rework_pending: 本轮质检是否已判定需要回退重生成
+- final_approval: 终审签发结果（人工闸门）
+- mode: full（从零生成）/ review（人工上传标书复审）
+- review_draft / review_reference: 复审输入（上传成稿与已有解析产物快照）
 - status: 流水线总体状态
-- approval: 人工闸门决议
 
 并行扇出（technical ∥ legal）会在同一 step 并发写回，因此 dict 字段
 用浅合并 reducer、logs 用追加 reducer，避免 last_value 通道冲突。
@@ -39,5 +42,12 @@ class PipelineState(TypedDict, total=False):
     upstream: Annotated[dict[str, Any], merge_dict]
     logs: Annotated[list[StageLog], add]
     rework_count: int
+    # 本轮质检是否已经决定返工：条件边只看这个布尔值，避免“先 +1 再判断”导致少跑一轮。
+    rework_pending: bool
+    # 终审闸门结果：decision 为 approved 才允许 Electron 导出 Word。
+    final_approval: Annotated[dict[str, Any], merge_dict]
+    mode: str
+    review_draft: dict[str, Any]
+    review_reference: dict[str, Any]
     status: str
     approval: ApprovalDecision

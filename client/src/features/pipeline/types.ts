@@ -17,6 +17,7 @@ export const STATUS_META: Record<PipelineStageStatus, { label: string; tone: str
   success: { label: '已通过', tone: 'is-success' },
   error: { label: '失败', tone: 'is-error' },
   blocked: { label: '阻塞', tone: 'is-error' },
+  skipped: { label: '已跳过', tone: 'is-pending' },
 };
 
 export interface TeamContract {

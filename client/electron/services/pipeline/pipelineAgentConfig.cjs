@@ -7,6 +7,8 @@ const STAGE_STATUS = {
   SUCCESS: 'success',
   ERROR: 'error',
   BLOCKED: 'blocked',
+  /** 人工上传复审时跳过的阶段（解析、资格、技术、法规）。 */
+  SKIPPED: 'skipped',
 };
 
 const APPROVAL_DECISION = {
@@ -141,7 +143,22 @@ const PIPELINE_STAGES = [
     dependsOn: ['generate'],
     parallelGroup: null,
   },
+  {
+    // 终审闸门：没有执行节点，只有人工 interrupt。通过后才允许导出 Word。
+    key: 'final_approval',
+    agentId: 1,
+    label: '终审签发',
+    gate: true,
+    gateLabel: '终审签发',
+    description: '人工终审成稿：通过后允许导出 Word；打回则携带意见退回生成节点重写受影响章节。',
+    dependsOn: ['consistency'],
+    parallelGroup: null,
+    virtual: true,
+  },
 ];
+
+/** 人工上传标书复审时直接跳过的阶段：不重跑解析与生成。 */
+const REVIEW_SKIP_STAGE_KEYS = ['parse', 'qualification', 'technical', 'legal'];
 
 function getStageByKey(stageKey) {
   return PIPELINE_STAGES.find((stage) => stage.key === stageKey);
@@ -153,5 +170,6 @@ module.exports = {
   APPROVAL_DECISION,
   PIPELINE_AGENTS,
   PIPELINE_STAGES,
+  REVIEW_SKIP_STAGE_KEYS,
   getStageByKey,
 };

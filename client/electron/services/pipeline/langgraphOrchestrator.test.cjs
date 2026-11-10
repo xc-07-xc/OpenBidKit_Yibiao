@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createLangGraphOrchestrator } = require('./langgraphOrchestrator.cjs');
+const { PIPELINE_STAGES } = require('./pipelineAgentConfig.cjs');
 
 function createFakeStore() {
   const stages = new Map();
@@ -92,11 +93,14 @@ test('start 初始化黑板并投影 Python 快照', async () => {
     assert.equal(bridge.calls.start[0].runId, state.runId);
     assert.deepEqual(bridge.calls.start[0].context, { projectOverview: '测试项目' });
 
-    assert.equal(state.stages.length, 6);
+    // 阶段清单以配置为准（含新增的终审签发闸门），避免每次加分阶段都要改断言。
+    assert.equal(state.stages.length, PIPELINE_STAGES.length);
     const byKey = new Map(state.stages.map((stage) => [stage.stage_key, stage]));
     assert.equal(byKey.get('parse').status, 'waiting_approval');
     assert.deepEqual(byKey.get('parse').outputs, { summary: '解析完成' });
     assert.equal(byKey.get('qualification').status, 'pending');
+    assert.equal(byKey.get('final_approval').status, 'pending');
+    assert.equal(state.exportReady, false);
     assert.equal(state.status, 'waiting_approval');
   } finally {
     orchestrator.dispose();
@@ -203,6 +207,90 @@ test('返工轮次写入评分轨迹，供前端展示返工前后分数', async
     assert.equal(consistency.outputs._metrics.history.length, 1);
     assert.equal(consistency.outputs._metrics.history[0].score, 64);
     assert.equal(consistency.outputs._metrics.history[0].highCount, 1);
+  } finally {
+    orchestrator.dispose();
+  }
+});
+
+test('人工复审：跳过解析等阶段，只跑一致性并停在终审闸门', async () => {
+  const store = createFakeStore();
+  const reviewSnapshot = {
+    run_id: 'run-review',
+    status: 'waiting_approval',
+    active: true,
+    mode: 'review',
+    outputs: {
+      generate: { sections: [{ heading: '第一章 工程概况', content: '工期 30 日历天。' }], source: 'manual' },
+      consistency: { issues: [], score: 88, passed: true, summary: '比对完成', comparison: [] },
+    },
+    upstream: {},
+    logs: [],
+    rework_count: 0,
+    approval: {},
+    next: ['final_approval_gate'],
+    interrupts: [{ stage_key: 'final_approval', kind: 'final_approval' }],
+    final_approval: { decision: 'pending' },
+    error: null,
+  };
+  const bridge = createFakeBridge({
+    async review(runId, payload) {
+      bridge.calls.review.push({ runId, payload });
+      return reviewSnapshot;
+    },
+  });
+  bridge.calls.review = [];
+  const orchestrator = createLangGraphOrchestrator({ pipelineStore: store, knowledgeBaseStore: null, app: null, emit: null, bridge });
+
+  const state = await orchestrator.review({ text: '第一章 工程概况\n工期 30 日历天。', fileName: '既有标书.docx' });
+  try {
+    assert.equal(state.mode, 'review');
+    assert.equal(bridge.calls.review.length, 1);
+    assert.equal(bridge.calls.review[0].payload.draft.source, 'manual');
+    assert.equal(bridge.calls.review[0].payload.draft.fileName, '既有标书.docx');
+    const byKey = new Map(state.stages.map((stage) => [stage.stage_key, stage]));
+    for (const key of ['parse', 'qualification', 'technical', 'legal']) {
+      assert.equal(byKey.get(key).status, 'skipped', `${key} 应为 skipped`);
+    }
+    assert.equal(byKey.get('consistency').status, 'success');
+    assert.equal(byKey.get('final_approval').status, 'waiting_approval');
+    assert.ok(byKey.get('final_approval').logs.some((log) => log.message.includes('人工终审')));
+    assert.equal(state.status, 'waiting_approval');
+    // 终审未签发前不允许导出。
+    assert.equal(state.exportReady, false);
+  } finally {
+    orchestrator.dispose();
+  }
+});
+
+test('终审签发后 exportReady 为真，导出才放行', async () => {
+  const store = createFakeStore();
+  const bridge = createFakeBridge({
+    async approve(runId, stageKey, note) {
+      return {
+        run_id: 'run-final',
+        status: 'success',
+        active: false,
+        mode: 'full',
+        outputs: { generate: { sections: [{ heading: '第一章', content: '正文' }] } },
+        upstream: {},
+        logs: [],
+        rework_count: 0,
+        approval: { stage_key: stageKey, decision: 'approved', note },
+        final_approval: { decision: 'approved', note },
+        next: [],
+        interrupts: [],
+        error: null,
+      };
+    },
+  });
+  const orchestrator = createLangGraphOrchestrator({ pipelineStore: store, knowledgeBaseStore: null, app: null, emit: null, bridge });
+
+  await orchestrator.start({});
+  try {
+    assert.equal(orchestrator.getState().exportReady, false);
+    const state = await orchestrator.approve('final_approval', '可以提交');
+    assert.equal(state.exportReady, true);
+    assert.equal(state.stages.find((stage) => stage.stage_key === 'final_approval').status, 'success');
   } finally {
     orchestrator.dispose();
   }

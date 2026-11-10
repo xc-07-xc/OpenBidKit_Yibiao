@@ -22,6 +22,9 @@ class NodeStageExecutor:
         payload = {"stage_key": stage_key, "context": context, "upstream": upstream}
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(f"{self.base_url}/internal/run-stage", json=payload)
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # 保留 Node 侧的错误正文，否则只剩 500 状态码，无法定位是哪一步失败。
+                detail = resp.text[:2000] if resp.text else ""
+                raise RuntimeError(f"Node 阶段执行失败 {resp.status_code}: {detail}")
             data = resp.json()
         return {"outputs": data.get("outputs") or {}, "logs": data.get("logs") or []}

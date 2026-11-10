@@ -53,16 +53,20 @@ function createStageHttpServer({ runners }) {
           if (raw.length > 1024 * 1024) req.destroy();
         });
         req.on('end', async () => {
+          let stageKey = '';
           try {
             const payload = JSON.parse(raw || '{}');
+            stageKey = String(payload.stage_key || '');
             const result = await runStageLocally({
-              stageKey: payload.stage_key,
+              stageKey,
               context: payload.context,
               upstream: payload.upstream,
             });
             return sendJson(res, 200, result);
           } catch (error) {
-            return sendJson(res, 500, { error: { message: error?.message || String(error) } });
+            // 内部执行器是 Python 唯一能看到阶段错误的地方，必须把完整堆栈留在主进程日志里。
+            console.error(`[pipeline-stage] 阶段 ${stageKey || '?'} 执行失败：`, error?.stack || error);
+            return sendJson(res, 500, { error: { message: error?.message || String(error), stage_key: stageKey } });
           }
         });
         return;

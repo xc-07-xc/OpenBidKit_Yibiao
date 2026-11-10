@@ -49,6 +49,21 @@ function createLangGraphBridge() {
         timeoutMs: COMMAND_TIMEOUT_MS,
       });
     },
+    review(runId, payload = {}) {
+      return request('/graph/review', {
+        method: 'POST',
+        body: {
+          run_id: runId,
+          context: payload.context || {},
+          draft: payload.draft || {},
+          reference: payload.reference || {},
+        },
+        timeoutMs: COMMAND_TIMEOUT_MS,
+      });
+    },
+    getSchema() {
+      return request('/graph/schema');
+    },
     getState(runId) {
       return request(`/graph/state?run_id=${encodeURIComponent(runId)}`);
     },

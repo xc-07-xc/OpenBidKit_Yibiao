@@ -1,18 +1,24 @@
 const {
   APPROVAL_DECISION,
   PIPELINE_STAGES,
+  REVIEW_SKIP_STAGE_KEYS,
   STAGE_STATUS,
 } = require('./pipelineAgentConfig.cjs');
 const { persistStageFile, persistArtifact } = require('./pipelineArtifacts.cjs');
+const { buildReviewDraft } = require('./pipelineReview.cjs');
 
 // Python 侧已改为「提交即返回、后台执行」，Electron 侧用轮询把图状态投影回黑板。
 const POLL_INTERVAL_MS = 2000;
 
 function derivePipelineStatus(stages) {
   if (stages.some((stage) => stage.status === STAGE_STATUS.ERROR)) return 'error';
+  // blocked=重启后上一轮被中断且无法自动续跑，不能继续显示“执行中”。
+  if (stages.some((stage) => stage.status === STAGE_STATUS.BLOCKED)) return 'error';
   if (stages.some((stage) => stage.status === STAGE_STATUS.WAITING_APPROVAL)) return 'waiting_approval';
   if (stages.some((stage) => stage.status === STAGE_STATUS.RUNNING)) return 'running';
-  if (stages.length > 0 && stages.every((stage) => stage.status === STAGE_STATUS.SUCCESS)) return 'success';
+  // 人工复审会跳过部分阶段，skipped 与 success 一样视为“已完成”。
+  const done = (stage) => stage.status === STAGE_STATUS.SUCCESS || stage.status === STAGE_STATUS.SKIPPED;
+  if (stages.length > 0 && stages.every(done)) return 'success';
   if (stages.length > 0 && stages.every((stage) => stage.status === STAGE_STATUS.PENDING)) return 'idle';
   return 'running';
 }
@@ -44,15 +50,21 @@ function createLangGraphOrchestrator({ pipelineStore, knowledgeBaseStore, app, e
   // 返工评分轨迹：每触发一轮返工记录当时的质检分与 high 问题数，供前端展示“返工前 → 返工后”。
   let scoreHistory = [];
   let lastReworkCount = 0;
+  // full=从零生成；review=人工上传标书复审（跳过解析与生成）。
+  let mode = 'full';
 
   function getState() {
     const stages = pipelineStore.loadAll();
+    const finalStage = stages.find((stage) => stage.stage_key === 'final_approval');
     return {
       status: derivePipelineStatus(stages),
       active,
       runId,
+      mode,
       orchestrator: 'langgraph',
       stages,
+      // 终审签发是导出的前置条件：前端据此决定“导出 Word”是否可点。
+      exportReady: finalStage?.approval?.decision === APPROVAL_DECISION.APPROVED,
     };
   }
 
@@ -74,6 +86,15 @@ function createLangGraphOrchestrator({ pipelineStore, knowledgeBaseStore, app, e
     active = false;
   }
 
+  const stageKeys = PIPELINE_STAGES.map((stage) => stage.key).sort((a, b) => b.length - a.length);
+  // 图里的节点名是 `final_approval_gate`、`generate_run` 这种形式，要映射回 stage_key；
+  // 按最长前缀匹配，否则 final_approval 会被切成 final。
+  const baseOf = (node) => {
+    const name = String(node || '');
+    const hit = stageKeys.find((key) => name === key || name.startsWith(`${key}_`));
+    return hit || name.split('_')[0];
+  };
+
   function projectSnapshot(snapshot) {
     if (!snapshot || typeof snapshot !== 'object') return;
     const outputs = snapshot.outputs || {};
@@ -81,8 +102,9 @@ function createLangGraphOrchestrator({ pipelineStore, knowledgeBaseStore, app, e
     const interrupts = Array.isArray(snapshot.interrupts) ? snapshot.interrupts : [];
     const waitingKey = interrupts.length ? interrupts[0].stage_key : null;
     const next = Array.isArray(snapshot.next) ? snapshot.next : [];
-    const nextBase = next.map((node) => String(node).split('_')[0]);
+    const nextBase = next.map(baseOf);
     const approval = snapshot.approval || {};
+    const finalDecision = (snapshot.final_approval || {}).decision || '';
 
     active = Boolean(snapshot.active);
 
@@ -92,9 +114,18 @@ function createLangGraphOrchestrator({ pipelineStore, knowledgeBaseStore, app, e
       const stageOutputs = hasOutputs ? outputs[cfg.key] : existing?.outputs ?? null;
 
       let status = existing?.status || STAGE_STATUS.PENDING;
-      if (stageOutputs && Object.keys(stageOutputs).length > 0) status = STAGE_STATUS.SUCCESS;
+      // 人工复审跳过的阶段保持“已跳过”，不能被“没有产物”重新算回 pending。
+      if (status !== STAGE_STATUS.SKIPPED && stageOutputs && Object.keys(stageOutputs).length > 0) {
+        status = STAGE_STATUS.SUCCESS;
+      }
       if (waitingKey === cfg.key) status = STAGE_STATUS.WAITING_APPROVAL;
       else if (nextBase.includes(cfg.key)) status = STAGE_STATUS.RUNNING;
+
+      // 终审闸门没有产物，状态只看人工决议与是否正在等待。
+      if (cfg.key === 'final_approval') {
+        if (finalDecision === 'approved') status = STAGE_STATUS.SUCCESS;
+        else if (finalDecision === 'rejected' && waitingKey !== cfg.key) status = STAGE_STATUS.PENDING;
+      }
 
       const stageLogs = existing?.logs ? [...existing.logs] : [];
       for (const entry of logs) {
@@ -112,6 +143,14 @@ function createLangGraphOrchestrator({ pipelineStore, knowledgeBaseStore, app, e
           note: approval.note || '',
           decided_at: new Date().toISOString(),
         };
+      }
+
+      // 终审挂起时补一条说明，界面能直接看出“流水线为什么没结束”。
+      if (cfg.key === 'final_approval' && status === STAGE_STATUS.WAITING_APPROVAL) {
+        const waitingMessage = '已提交人工终审：通过后解锁导出 Word，打回则携带意见退回生成节点重写。';
+        if (!stageLogs.some((log) => log.message === waitingMessage)) {
+          stageLogs.push({ at: new Date().toISOString(), message: waitingMessage });
+        }
       }
 
       pipelineStore.upsertStage({
@@ -246,6 +285,7 @@ function createLangGraphOrchestrator({ pipelineStore, knowledgeBaseStore, app, e
     if (active) return getState();
     const context = payload || {};
     runId = createRunId();
+    mode = 'full';
     lastErrorText = '';
     scoreHistory = [];
     lastReworkCount = 0;
@@ -256,6 +296,88 @@ function createLangGraphOrchestrator({ pipelineStore, knowledgeBaseStore, app, e
     ensurePolling();
     broadcast();
     return getState();
+  }
+
+  function initializeReviewStages(draft, context) {
+    pipelineStore.clearAll();
+    for (const cfg of PIPELINE_STAGES) {
+      const skipped = REVIEW_SKIP_STAGE_KEYS.includes(cfg.key);
+      pipelineStore.upsertStage({
+        stage_key: cfg.key,
+        agent_id: cfg.agentId,
+        label: cfg.label,
+        status: skipped ? STAGE_STATUS.SKIPPED : STAGE_STATUS.PENDING,
+        inputs: context,
+        outputs: skipped
+          ? { skipped: true, note: '人工上传标书复审：跳过该阶段，直接进入一致性检查。' }
+          : null,
+        approval: skipped
+          ? { decision: APPROVAL_DECISION.APPROVED, note: '复审跳过' }
+          : { decision: APPROVAL_DECISION.PENDING },
+        logs: skipped ? [{ at: new Date().toISOString(), message: '人工上传复审，跳过本阶段。' }] : [],
+      });
+    }
+    // 上传成稿直接写进 generate，不经过模型，也不重跑解析。
+    pipelineStore.upsertStage({
+      ...pipelineStore.loadStage('generate'),
+      status: STAGE_STATUS.SUCCESS,
+      outputs: draft,
+      started_at: new Date().toISOString(),
+      logs: [{ at: new Date().toISOString(), message: `已接收人工上传标书：${draft.sections.length} 节 / ${draft.chars} 字。` }],
+    });
+  }
+
+  /** 复审基准：复用上一轮已解析的招标要求（若有），供逐条比对使用。 */
+  function collectReviewReference() {
+    const reference = {};
+    for (const key of ['parse', 'qualification', 'technical', 'legal']) {
+      const stage = pipelineStore.loadStage(key);
+      if (stage?.outputs && typeof stage.outputs === 'object' && Object.keys(stage.outputs).length > 0) {
+        if (!stage.outputs.skipped) reference[key] = stage.outputs;
+      }
+    }
+    return reference;
+  }
+
+  /**
+   * 辅线：人工上传/手工修改的标书重新审查。
+   * 直接把文本塞进 outputs["generate"]，跳过解析与生成，只触发一致性检查 + 终审闸门。
+   */
+  async function review(payload) {
+    if (active) throw new Error('流水线仍在执行，请等当前运行结束或先处理待确认闸门');
+    const draft = buildReviewDraft({
+      text: payload?.text,
+      fileName: payload?.fileName,
+    });
+    if (!draft.sections.length) {
+      throw new Error('未检测到有效标书文本：请粘贴正文或选择 .docx / .pdf / .txt 文件');
+    }
+    const reference = collectReviewReference();
+    const context = {
+      projectOverview: String(payload?.projectOverview || '').trim(),
+      companyProfile: String(payload?.companyProfile || '').trim(),
+      manualReview: true,
+      reviewFileName: draft.fileName,
+      reviewChars: draft.chars,
+      strictConsistency: payload?.strictConsistency !== false,
+    };
+    runId = createRunId();
+    mode = 'review';
+    lastErrorText = '';
+    scoreHistory = [];
+    lastReworkCount = 0;
+    initializeReviewStages(draft, context);
+    broadcast();
+    const snapshot = await bridge.review(runId, { context, draft, reference });
+    projectSnapshot(snapshot);
+    ensurePolling();
+    broadcast();
+    return { ...getState(), reviewDraft: { sections: draft.sections.length, chars: draft.chars } };
+  }
+
+  async function getSchema() {
+    const payload = await bridge.getSchema();
+    return { success: true, source: 'langgraph', ...payload };
   }
 
   async function approve(stageKey, note) {
@@ -282,6 +404,8 @@ function createLangGraphOrchestrator({ pipelineStore, knowledgeBaseStore, app, e
 
   return {
     start,
+    review,
+    getSchema,
     approve,
     reject,
     getState,

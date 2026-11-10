@@ -40,33 +40,48 @@ Electron 启动时会自动探测并拉起本服务：优先使用安装包内�
 | 端点 | 说明 |
 | --- | --- |
 | `POST /graph/start` | `{ run_id, context }`，**立即返回**当前快照，图在后台执行 |
-| `GET /graph/state?run_id=` | 当前图状态、产物、日志、返工轮次、待处理闸门、错误 |
-| `POST /graph/approve` | `{ run_id, stage_key, note }`，恢复挂起的闸门 |
-| `POST /graph/reject` | 同上，打回并重跑本阶段 |
+| `POST /graph/review` | `{ run_id, context, draft, reference }`，辅线：人工上传/粘贴标书复审，跳过解析与生成，直接把文本塞进 `outputs["generate"]` 后跑一致性检查 |
+| `GET /graph/state?run_id=` | 当前图状态、产物、日志、返工轮次、`mode`、`export_ready`、待处理闸门、错误 |
+| `POST /graph/approve` | `{ run_id, stage_key, note }`，恢复挂起的闸门（含 `final_approval`） |
+| `POST /graph/reject` | 同上，打回并重跑本阶段；`final_approval` 打回则退回生成节点重写 |
+| `GET /graph/schema` | 各节点产物契约（`label` / `agent_id` / `schema` / `example`），前端据此渲染真实数据或造假数据 UI |
 | `GET /health` | 健康检查 |
 
-每次 `start` 使用独立 `run_id` 作为 LangGraph `thread_id`，不同运行互不覆盖；
+每次 `start` / `review` 使用独立 `run_id` 作为 LangGraph `thread_id`，不同运行互不覆盖；
 `/graph/state` 在运行中可反复读取（Electron 每 2 秒轮询一次并投影回 SQLite 黑板）。
 后台任务异常会写入快照 `error` 字段，Electron 侧将对应阶段置为失败并转人工。
+`export_ready` 只有在 `final_approval` 人工通过后才为 `true`，Node 侧据此放行 Word 导出。
 
 ## 编排拓扑
 
-每个闸门阶段拆 `<stage>_run`（执行节点，回调 Node 复用 Runner）+ `<stage>_gate`（审批节点，`interrupt()` 挂起）；technical 与 consistency 无人工闸门。
+每个闸门阶段拆 `<stage>_run`（执行节点，回调 Node 复用 Runner）+ `<stage>_gate`（审批节点，`interrupt()` 挂起）；consistency 无人工闸门，终审单独一道闸门。
 
 ```
 START → parse_run → parse_gate → qualification_run → qualification_gate
         ├→ technical_run ───────────────────────┐
         └→ legal_run → legal_gate ──────────────┼→ generate_run → generate_gate
                                                 ↓
-                                        consistency_run（自动质检）
+                                        consistency_run（自动质检 + 规则审计）
                                                 ↓
-              质检条件边：一致性 high 且未超 2 轮 → 回退 generate_run；否则结束
+                                    final_approval_gate（终审签发）
+                                      │ approved          │ rejected
+                                      ↓                   ↓
+                                     END          generate_run（携意见重生成）
+```
+
+辅线（人工复审）：
+
+```
+START → review_ingest（文本塞进 outputs["generate"]）→ consistency_run
+      → final_approval_gate →（approved → END ｜ rejected → generate_run → consistency_run）
 ```
 
 - 并行：technical 与 legal 由 qualification 闸门扇出并行，汇合到 generate。
 - 人工闸门：parse / qualification / legal / generate 产出后 `interrupt()`，等人工 approve/reject 恢复；reject 清空本阶段产物并自环回到 `<stage>_run` 重跑。
+- 终审：consistency 之后固定进入 `final_approval_gate`，必须人工确认才结束并放行导出。
 - 回退：consistency 检出可自纠的 high 一致性问题，累加 `rework_count`，把问题清单写成 `feedbackNotes`、把上一轮成稿写成 `previousDraft` 回传，生成阶段只重写受影响章节；上限 `MAX_REWORK_ROUNDS=2`，超限结束（转人工复核）。
-- 材料缺失类（缺报价/资质/业绩/人员/证书等）只标记，不自动回退。
+- 规则审计：一致性结果由模型判断 + `consistencyAudit.cjs` 的纯规则审计合并，`source=rule_audit` 的问题同一份成稿每次都稳定复现（占位残留、章节过短、实质性条款零命中、工期口径冲突），用于演示和验收。
+- 材料缺失类（缺报价/资质/业绩/人员/证书等，`category=missing_material`）只标记，不自动回退。
 
 ## 对接契约
 

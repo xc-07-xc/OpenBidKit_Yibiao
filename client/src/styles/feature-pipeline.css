@@ -439,3 +439,129 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* 辅线：人工上传标书复审 */
+.pipeline-review {
+  border-left: 3px solid rgba(56, 189, 248, 0.55);
+}
+
+.pipeline-review-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--yb-text);
+}
+
+.pipeline-review-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--yb-text-soft);
+}
+
+.pipeline-review-text {
+  min-height: 120px;
+  max-height: 280px;
+  font-family: inherit;
+}
+
+/* 节点输出契约 */
+.pipeline-schema-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.pipeline-schema-grid .pipeline-stage-summary {
+  margin: 0;
+  font-size: 12px;
+  color: var(--yb-text-soft);
+}
+
+/* 一致性检查的逐条比对报告 */
+.pipeline-comparison {
+  display: grid;
+  gap: 6px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.pipeline-comparison-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid var(--yb-border-soft);
+  border-radius: var(--yb-radius-md);
+  background: #fff;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--yb-text);
+}
+
+.pipeline-comparison-item {
+  display: grid;
+  gap: 2px;
+  word-break: break-word;
+}
+
+.pipeline-comparison-item em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--yb-text-muted);
+}
+
+.pipeline-comparison-status {
+  justify-self: start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  background: var(--yb-border-soft);
+  color: var(--yb-text-soft);
+}
+
+.pipeline-comparison-status.is-responded {
+  background: var(--yb-success-soft);
+  color: var(--yb-success-deep);
+}
+
+.pipeline-comparison-status.is-partial {
+  background: var(--yb-warning-soft);
+  color: var(--yb-warning-deep);
+}
+
+.pipeline-comparison-status.is-missing {
+  background: var(--yb-danger-soft);
+  color: var(--yb-danger-deep);
+}
+
+.pipeline-comparison-status.is-na {
+  background: var(--yb-border-soft);
+  color: var(--yb-text-muted);
+  border: 1px dashed var(--yb-border);
+}
+
+.pipeline-comparison-legend {
+  margin-left: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--yb-text-muted);
+}
+
+.pipeline-comparison-note {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--yb-warning-deep);
+  border-radius: 0 var(--yb-radius-md) var(--yb-radius-md) 0;
+  background: var(--yb-warning-soft);
+  font-size: 12px;
+  color: var(--yb-warning-deep);
+}
+
+.pipeline-comparison-evidence {
+  color: var(--yb-text-soft);
+  word-break: break-word;
+}
+

@@ -67,6 +67,47 @@ function registerPipelineIpc({ orchestrator, fileService, app }) {
       parserLabel,
     };
   });
+
+  // 辅线：选择一份已写好的标书，仅解析成文本，不写入招标文件工作区。
+  ipcMain.handle('pipeline:pick-review-draft', async () => {
+    if (!fileService?.importTechnicalPlanDocument) {
+      return { success: false, message: '文件解析服务不可用' };
+    }
+    const result = await fileService.importTechnicalPlanDocument('投标文件', { assetScopePrefix: 'pipeline-review' });
+    if (!result?.success) {
+      return { success: false, message: result?.message || '标书解析失败' };
+    }
+    const text = String(result.file_content || '').trim();
+    if (!text) {
+      return { success: false, message: '未提取到有效文本，请检查文件内容' };
+    }
+    return {
+      success: true,
+      message: result.message || '投标文件已解析',
+      text,
+      fileName: result.file_name || '',
+      chars: text.length,
+      parserLabel: result.parser_label || '',
+    };
+  });
+
+  ipcMain.handle('pipeline:submit-review', (_event, payload) =>
+    orchestrator.review({
+      text: payload?.text,
+      fileName: payload?.fileName,
+      projectOverview: payload?.projectOverview,
+      companyProfile: payload?.companyProfile,
+      strictConsistency: payload?.strictConsistency,
+    }),
+  );
+
+  ipcMain.handle('pipeline:get-schema', async () => {
+    try {
+      return await orchestrator.getSchema();
+    } catch (error) {
+      return { success: false, message: error?.message || '节点输出结构不可用' };
+    }
+  });
 }
 
 // 导出服务在装配后期才创建，单独注册导出处理器；编排器实例延迟到点击时再取，避免注册时序固化空引用。
@@ -81,6 +122,14 @@ function registerPipelineExportIpc({ getOrchestrator, exportService }) {
     }
     const state = orchestrator.getState();
     const stages = Array.isArray(state?.stages) ? state.stages : [];
+    // 终审签发是导出前置条件：没有人工确认过的成稿不能直接落成 Word。
+    const finalStage = stages.find((stage) => stage.stage_key === 'final_approval');
+    if (!finalStage || finalStage.approval?.decision !== 'approved') {
+      return {
+        success: false,
+        message: '终审尚未签发：请先在「终审签发」闸门点击通过，确认成稿可提交后再导出 Word。',
+      };
+    }
     const generate = stages.find((stage) => stage.stage_key === 'generate');
     const outputs = generate && generate.outputs && typeof generate.outputs === 'object' ? generate.outputs : {};
     const sections = Array.isArray(outputs.sections) ? outputs.sections : [];

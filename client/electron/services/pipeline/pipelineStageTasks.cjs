@@ -1,5 +1,7 @@
 const Ajv = require('ajv');
 
+const { auditDraft, dedupeIssues, keywordsOf, locateSection, sectionsOf, compact } = require('./consistencyAudit.cjs');
+
 const ajv = new Ajv({ allErrors: true, strict: true });
 
 function strList(value) {
@@ -184,12 +186,28 @@ const CONSISTENCY_SCHEMA = {
           description: { type: 'string' },
           suggestion: { type: 'string' },
           category: { type: 'string' },
+          source: { type: 'string', enum: ['model', 'rule_audit'] },
         },
       },
     },
     score: { type: 'number', minimum: 0, maximum: 100 },
     passed: { type: 'boolean' },
     summary: { type: 'string' },
+    // 逐条比对报告：人工上传复审时前端直接把它画成对照表。
+    comparison: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['item', 'required', 'status', 'evidence'],
+        additionalProperties: false,
+        properties: {
+          item: { type: 'string' },
+          required: { type: 'string' },
+          status: { type: 'string' },
+          evidence: { type: 'string' },
+        },
+      },
+    },
   },
 };
 
@@ -361,21 +379,41 @@ const STAGE_TASKS = {
     outputFile: 'consistency-report.json',
     title: '一致性检查',
     schema: CONSISTENCY_SCHEMA,
-    empty: () => ({ issues: [], score: 0, passed: false, summary: '' }),
+    empty: () => ({ issues: [], score: 0, passed: false, summary: '', comparison: [] }),
     normalize: (parsed) => ({
-      issues: normalizeEntryList(parsed.issues, ['scope', 'severity', 'description', 'suggestion', 'category']).map((entry) => ({
+      issues: normalizeEntryList(parsed.issues, ['scope', 'severity', 'description', 'suggestion', 'category', 'source']).map((entry) => ({
         scope: entry.scope,
         severity: ['high', 'medium', 'low'].includes(entry.severity) ? entry.severity : 'low',
         description: entry.description,
         suggestion: entry.suggestion,
         category: ['consistency', 'missing_material'].includes(entry.category) ? entry.category : '',
+        source: entry.source === 'rule_audit' ? 'rule_audit' : 'model',
       })),
       score: Number(parsed.score) || 0,
       passed: Boolean(parsed.passed),
       summary: String(parsed.summary || '').trim(),
+      comparison: normalizeEntryList(parsed.comparison, ['item', 'required', 'status', 'evidence']).map((entry) => ({
+        item: entry.item,
+        required: entry.required,
+        status: ['responded', 'partial', 'missing', 'n/a'].includes(entry.status) ? entry.status : 'missing',
+        evidence: entry.evidence,
+      })),
     }),
     buildPrompt: (context) => {
       const upstream = summarizeUpstream(context?.upstream);
+      const draft = context?.upstream?.generate || {};
+      const manual = draft?.source === 'manual' || context?.manualReview === true;
+      const manualSection = manual
+        ? [
+            '',
+            '本次为【人工上传标书复审】：待检成稿由用户上传或手工修改，不是本系统生成的。',
+            '请以招标文件的实质性条款、资格条件为基准逐条比对成稿，明确标出未响应、只作套话响应、前后矛盾的条目；',
+            '若上游未提供招标文件条款（parse 被跳过），比对只能以成稿自身为参照，只报内部不一致，不要虚构招标要求。',
+            'comparison 中实质性条款与资格条件用 responded / partial / missing 三态；评分办法类条目 status 固定填 n/a（评分项不判响应），evidence 只说明成稿哪一章对应这个评分点。',
+            '所有 status=responded 的条目，必须与 issues 里报出的问题不冲突：本条已被记为问题的，不得标 responded。',
+            'evidence 写命中的原句关键词并注明所在章节，或“全文未命中”。',
+          ].join('\n')
+        : '';
       return [
         '你是一致性检查 Agent（质量守门员）。请核对上游各阶段与成稿之间的口径一致性、资格与承诺一致性、待填写项与明显废标风险，输出问题清单与处置建议。',
         '',
@@ -386,16 +424,126 @@ const STAGE_TASKS = {
         '4. 每条问题必须标注 category：consistency 表示口径/一致性错误（如与招标要求冲突、前后矛盾、承诺与响应不符，可由生成 Agent 自纠）；missing_material 表示材料缺失/占位（如缺报价、资质、业绩、人员、证书等外部输入，需人工补充材料，不能靠自纠消除）。',
         '5. 逐条核对上游「实质性条款」与「评分办法」：成稿中未明确响应、只用套话带过或整条缺失的，记 high 且 category=consistency，不要归入 missing_material；',
         '6. scope 写成成稿中对应的章节标题（定位不到章节时写“全局”），生成阶段会按 scope 定点重写。',
+        manualSection,
         '',
         `上游产物：\n${upstream}`,
         '',
         `完成后把结果写入 consistency-report.json，结构如下：`,
-        '{"issues":[{"scope":"问题定位范围","severity":"high|medium|low","description":"不一致或风险描述","suggestion":"处置建议","category":"consistency|missing_material"}],"score":0,"passed":false,"summary":"质检总体结论"}',
+        '{"issues":[{"scope":"问题定位范围","severity":"high|medium|low","description":"不一致或风险描述","suggestion":"处置建议","category":"consistency|missing_material"}],"score":0,"passed":false,"summary":"质检总体结论","comparison":[{"item":"被核对的要求原文","required":"实质性条款|资格条件|评分办法","status":"responded|partial|missing|n/a（评分项）","evidence":"命中关键词或未命中的说明"}]}',
       ].join('\n');
     },
     buildFiles: () => [],
   },
 };
+
+/**
+ * 在模型质检结果之上叠加确定性规则审计。
+ *
+ * 规则审计负责“稳定”：同一份成稿每次都会得到同一批 high 问题，不受模型随机性影响；
+ * 模型负责“理解”：口径、语气、废标风险这类需要读懂上下文的判断仍由模型给出。
+ * 两者合并后重新计算 score / passed，保证 high 存在时一定 passed=false。
+ */
+/**
+ * 比对条目的后置校准。模型给的 status 有两个常见偏差：
+ * 1. 评分办法（“技术部分 40 分，施工方案 5 分…得 5 分”）被当成义务条款判成“已响应”，
+ *    但评分项没有响应与否的概念，统一改 n\a，只核对是否有对应章节；
+ * 2. 同一轮里模型既说“已响应”又给出 high 问题，报告与结论自相矛盾。
+ *    凡是条目关键词命中某条 high 问题的，一律降为部分响应并注明冲突。
+ */
+function calibrateComparison(comparison, issues, sections) {
+  const highs = (Array.isArray(issues) ? issues : []).filter((issue) => issue?.severity === 'high');
+  return comparison.map((entry) => {
+    const required = String(entry?.required || '');
+    if (required.includes('评分') && entry.status !== 'n/a') {
+      // 评分项只核对“哪一章接住了这个评分点”，不回显关键词碎片。
+      const anchor = locateSection(Array.isArray(sections) ? sections : [], keywordsOf(entry.item || ''));
+      return {
+        ...entry,
+        status: 'n/a',
+        evidence: anchor
+          ? `评分项，不计响应；正文对应章节「${anchor}」，请核对分值是否写全`
+          : '评分项，不计响应；正文未找到对应章节，建议确认该评分点是否漏写',
+      };
+    }
+    if (entry.status !== 'responded') return entry;
+    const keys = keywordsOf(entry.item || '').filter((key) => compact(key).length >= 4);
+    if (!keys.length) return entry;
+    const conflict = highs.find((issue) => {
+      const text = compact(`${issue.scope || ''}${issue.description || ''}`);
+      const hits = keys.filter((key) => text.includes(compact(key)));
+      // 单个长词命中即可认定相关；短词需要两个以上，避免碎片误伤。
+      return hits.length >= 2 || hits.some((key) => compact(key).length >= 6);
+    });
+    if (!conflict) return entry;
+    return {
+      ...entry,
+      status: 'partial',
+      evidence: `${entry.evidence || ''}；质检已记为问题：${String(conflict.description || '').slice(0, 40)}`,
+    };
+  });
+}
+
+function applyConsistencyAudit(result, context) {
+  const upstream = context?.upstream && typeof context.upstream === 'object' ? context.upstream : {};
+  const draft = upstream.generate && typeof upstream.generate === 'object' ? upstream.generate : {};
+  const parse = upstream.parse && typeof upstream.parse === 'object' ? upstream.parse : {};
+  const strict = context?.strictConsistency === true || context?.selfLoopDemo === true;
+
+  const audit = auditDraft(draft, { parse, strict });
+  const modelIssues = Array.isArray(result?.issues) ? result.issues : [];
+  const taggedModel = modelIssues.map((issue) => ({ ...issue, source: issue?.source === 'rule_audit' ? 'rule_audit' : 'model' }));
+  const issues = dedupeIssues(taggedModel, audit.issues);
+
+  // 比对报告以规则计算结果为准（同一要求每次结论一致），模型补充的条目只做增补。
+  const comparison = [];
+  const seen = new Set();
+  for (const entry of [...audit.comparison, ...(Array.isArray(result?.comparison) ? result.comparison : [])]) {
+    const key = String(entry?.item || '').replace(/\s+/g, '');
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    comparison.push(entry);
+  }
+  const calibratedComparison = calibrateComparison(comparison, issues, sectionsOf(draft));
+  // 复审模式下 parse 被跳过，没有招标文件条款可比，逐条比对只能以成稿自身为参照。
+  const baselineMissing = Boolean(parse?.skipped) || !parse?.substantive;
+
+  const high = issues.filter((issue) => issue?.severity === 'high');
+  const medium = issues.filter((issue) => issue?.severity === 'medium');
+  const ruleHigh = high.filter((issue) => issue?.source === 'rule_audit').length;
+  const modelHigh = high.length - ruleHigh;
+  const modelScore = Number(result?.score);
+  let score = Number.isFinite(modelScore) && modelScore > 0 ? modelScore : 100;
+  if (high.length) {
+    score = Math.min(score, Math.max(0, 100 - high.length * 20 - medium.length * 5));
+  }
+  const passed = high.length ? false : Boolean(result?.passed);
+
+  const summaryParts = [String(result?.summary || '').trim()].filter(Boolean);
+  const auditLine = `规则审计：${audit.stats.sections} 节 / ${audit.stats.chars} 字，比对 ${calibratedComparison.length} 条要求，`
+    + `缺响应 ${audit.stats.missing} 条，占位 ${audit.stats.placeholders} 处，工期冲突 ${audit.stats.conflicts} 处。`;
+  summaryParts.push(auditLine);
+  if (baselineMissing) {
+    summaryParts.push('未加载招标文件条款（复审模式），逐条比对以成稿自身为参照，仅用于发现内部不一致，不能替代对招标文件的响应性核查。');
+  }
+
+  return {
+    ...result,
+    issues,
+    comparison: calibratedComparison,
+    score,
+    passed,
+    summary: summaryParts.join(' '),
+    _audit: {
+      ...audit.stats,
+      compared: calibratedComparison.length,
+      ruleHigh,
+      modelHigh,
+      strict,
+      manual: draft?.source === 'manual',
+      baselineMissing,
+    },
+  };
+}
 
 async function runStageTask({ agentService, stageKey, taskId, signal, context, onActivity }) {
   const task = STAGE_TASKS[stageKey];
@@ -422,7 +570,12 @@ async function runStageTask({ agentService, stageKey, taskId, signal, context, o
     validateOutput: (candidate) => validateOutput(candidate.output_content),
     onActivity,
   });
-  return agentResult.validation_result || task.empty();
+  const output = agentResult.validation_result || task.empty();
+  // 一致性检查必须再叠一层规则审计：模型结果可能漏报，也可能整轮失败（empty 产出）。
+  if (stageKey === 'consistency') {
+    return applyConsistencyAudit(output, resolvedContext);
+  }
+  return output;
 }
 
 function textFromEvent(event) {
@@ -468,6 +621,7 @@ module.exports = {
   STAGE_TASKS,
   STAGE_ACTIVE_TOOLS,
   makeValidator,
+  applyConsistencyAudit,
   runStageTask,
   createPipelineStageRunner,
 };

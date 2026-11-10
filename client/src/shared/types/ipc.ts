@@ -605,7 +605,15 @@ export interface DeveloperLayoutFigureResult {
   elapsedMs: number;
 }
 
-export type PipelineStageStatus = 'pending' | 'running' | 'waiting_approval' | 'success' | 'error' | 'blocked';
+export type PipelineStageStatus =
+  | 'pending'
+  | 'running'
+  | 'waiting_approval'
+  | 'success'
+  | 'error'
+  | 'blocked'
+  /** 人工上传复审时跳过的阶段（解析、资格、技术、法规）。 */
+  | 'skipped';
 
 export type PipelineApprovalDecision = 'pending' | 'approved' | 'rejected';
 
@@ -643,6 +651,47 @@ export interface PipelineState {
   orchestrator?: 'langgraph' | 'builtin';
   /** 本轮运行的标识；内置编排器没有 run 概念，返回 null。 */
   runId?: string | null;
+  /** full=从零生成；review=人工上传标书复审。 */
+  mode?: 'full' | 'review';
+  /** 终审是否已签发；只有 true 时才允许导出 Word。 */
+  exportReady?: boolean;
+}
+
+export interface PipelineReviewPickResult {
+  success: boolean;
+  message: string;
+  text?: string;
+  fileName?: string;
+  chars?: number;
+  parserLabel?: string;
+}
+
+export interface PipelineReviewPayload {
+  text: string;
+  fileName?: string;
+  projectOverview?: string;
+  companyProfile?: string;
+  /** 默认 true：更严格的关键词命中原判，用于演示与验收。 */
+  strictConsistency?: boolean;
+}
+
+/** `/graph/schema` 返回的节点产物契约，前端据此画真实 UI 或造假数据。 */
+export interface PipelineNodeSpec {
+  label: string;
+  agent_id: number;
+  output_file?: string | null;
+  description: string;
+  schema: Record<string, unknown>;
+  example: Record<string, unknown>;
+}
+
+export interface PipelineSchemaResult {
+  success: boolean;
+  message?: string;
+  source?: 'langgraph';
+  version?: number;
+  nodes?: Record<string, PipelineNodeSpec>;
+  notes?: string[];
 }
 
 export interface PipelineTenderImportResult {
@@ -964,6 +1013,9 @@ export interface YibiaoBridge {
     reject: (payload: { stageKey: string; note?: string }) => Promise<PipelineState>;
     getState: () => Promise<PipelineState>;
     importTender: () => Promise<PipelineTenderImportResult>;
+    pickReviewDraft: () => Promise<PipelineReviewPickResult>;
+    submitReview: (payload: PipelineReviewPayload) => Promise<PipelineState>;
+    getSchema: () => Promise<PipelineSchemaResult>;
     exportDraft: () => Promise<PipelineExportResult>;
     onEvent: (callback: (state: PipelineState) => void) => () => void;
   };

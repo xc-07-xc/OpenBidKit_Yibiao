@@ -114,6 +114,28 @@ async def main() -> None:
         assert missing.status_code == 404, missing.text
         duplicate = await client.post("/graph/start", json={"run_id": "smoke-run", "context": {}})
         assert duplicate.status_code == 409, duplicate.text
+
+        # 闸门打回只能重跑本阶段，不能顺带触发下一阶段（回归：Command(goto)+静态边双触发）。
+        await client.post("/graph/start", json={"run_id": "smoke-reject", "context": {}})
+        first_gate = None
+        for _ in range(40):
+            await asyncio.sleep(0.1)
+            state = (await client.get("/graph/state", params={"run_id": "smoke-reject"})).json()
+            if state["interrupts"]:
+                first_gate = state["interrupts"][0]["stage_key"]
+                break
+        assert first_gate == "parse", first_gate
+        await client.post("/graph/reject", json={"run_id": "smoke-reject", "stage_key": "parse", "note": "reject test"})
+        for _ in range(60):
+            await asyncio.sleep(0.1)
+            state = (await client.get("/graph/state", params={"run_id": "smoke-reject"})).json()
+            if state["interrupts"]:
+                assert state["interrupts"][0]["stage_key"] == "parse", state["interrupts"]
+                assert "qualification" not in state["outputs"], state["outputs"].keys()
+                break
+        else:
+            raise AssertionError("打回后没有重新停在解析闸门")
+        print("[reject] 打回只重跑 parse，未提前触发 qualification")
         print("SERVER SMOKE OK")
 
 

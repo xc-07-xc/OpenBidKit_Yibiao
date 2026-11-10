@@ -271,6 +271,10 @@ const workspaceDatabaseChannels = [
   'pipeline:reject',
   'pipeline:get-state',
   'pipeline:import-tender',
+  'pipeline:pick-review-draft',
+  'pipeline:submit-review',
+  'pipeline:get-schema',
+  'pipeline:export-word',
 ];
 
 function clearWorkspaceDatabaseIpc() {

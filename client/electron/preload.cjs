@@ -363,6 +363,9 @@ const bridge = {
     reject: (payload) => ipcRenderer.invoke('pipeline:reject', payload),
     getState: () => ipcRenderer.invoke('pipeline:get-state'),
     importTender: () => ipcRenderer.invoke('pipeline:import-tender'),
+    pickReviewDraft: () => ipcRenderer.invoke('pipeline:pick-review-draft'),
+    submitReview: (payload) => ipcRenderer.invoke('pipeline:submit-review', payload),
+    getSchema: () => ipcRenderer.invoke('pipeline:get-schema'),
     exportDraft: () => ipcRenderer.invoke('pipeline:export-word'),
     onEvent: (callback) => {
       const listener = (_event, payload) => callback(payload);

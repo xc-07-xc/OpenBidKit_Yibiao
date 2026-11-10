@@ -12,6 +12,8 @@ const PARALLEL_GROUPS = [['technical', 'legal']];
 
 function derivePipelineStatus(stages) {
   if (stages.some((stage) => stage.status === STAGE_STATUS.ERROR)) return 'error';
+  // blocked=重启后上一轮被中断且无法自动续跑，不能继续显示“执行中”。
+  if (stages.some((stage) => stage.status === STAGE_STATUS.BLOCKED)) return 'error';
   if (stages.some((stage) => stage.status === STAGE_STATUS.WAITING_APPROVAL)) return 'waiting_approval';
   if (stages.some((stage) => stage.status === STAGE_STATUS.RUNNING)) return 'running';
   if (stages.length > 0 && stages.every((stage) => stage.status === STAGE_STATUS.SUCCESS)) return 'success';
@@ -93,12 +95,15 @@ function createPipelineOrchestrator({ pipelineStore, runners, emit, knowledgeBas
 
   function getState() {
     const stages = pipelineStore.loadAll();
+    const finalStage = stages.find((stage) => stage.stage_key === 'final_approval');
     return {
       status: derivePipelineStatus(stages),
       active,
       runId: null,
+      mode: 'full',
       orchestrator: 'builtin',
       stages,
+      exportReady: finalStage?.approval?.decision === APPROVAL_DECISION.APPROVED,
     };
   }
 
@@ -160,6 +165,35 @@ function createPipelineOrchestrator({ pipelineStore, runners, emit, knowledgeBas
   }
 
   async function runStage(config, context, retryCounts) {
+    // 终审闸门没有执行节点：只挂起等人工签发，通过才允许导出。
+    if (config.virtual) {
+      const current = pipelineStore.loadStage(config.key);
+      pipelineStore.upsertStage({ ...current, status: STAGE_STATUS.RUNNING });
+      pipelineStore.appendLog(config.key, `${config.label}：等待人工终审签发。`);
+      broadcast();
+      const decision = await waitApproval(config);
+      if (decision.approved) {
+        pipelineStore.upsertStage({
+          ...pipelineStore.loadStage(config.key),
+          status: STAGE_STATUS.SUCCESS,
+        });
+        pipelineStore.appendLog(config.key, '终审通过，允许导出 Word。');
+        broadcast();
+        return 'next';
+      }
+      // 内置编排器没有图，无法自动回到生成节点；明确置为失败，避免界面停在“执行中”。
+      pipelineStore.upsertStage({
+        ...pipelineStore.loadStage(config.key),
+        status: STAGE_STATUS.ERROR,
+      });
+      pipelineStore.appendLog(
+        config.key,
+        `终审打回：${decision.note || '未填写意见'}；内置编排器不支持自动返工，请切换到 LangGraph 编排后重新启动流水线。`,
+      );
+      broadcast();
+      return 'error';
+    }
+
     const runner = runners?.[config.key];
     const current = pipelineStore.loadStage(config.key);
     pipelineStore.upsertStage({
@@ -342,6 +376,12 @@ function createPipelineOrchestrator({ pipelineStore, runners, emit, knowledgeBas
 
   return {
     start,
+    review() {
+      throw new Error('人工上传复审依赖 LangGraph 编排（跳过解析与生成后直接跑一致性检查），请确认 sidecar 已启动');
+    },
+    getSchema() {
+      throw new Error('节点输出结构由 LangGraph 服务提供，当前为内置编排器；请启动 sidecar 后重试');
+    },
     approve,
     reject,
     getState,
