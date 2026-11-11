@@ -1,7 +1,7 @@
 name: Sync Code to Mirrors
 
 on:
-  push:
+  # 二次开发版：无上游 AtomGit / Gitee 凭据，改为仅手动触发。
   workflow_dispatch:
 
 permissions:

@@ -41,7 +41,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "FB208",
+        "owner": "xc-07-xc",
         "repo": "OpenBidKit_Yibiao",
         "releaseType": "release"
       }
