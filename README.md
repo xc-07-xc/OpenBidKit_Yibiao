@@ -4,6 +4,16 @@
   <strong>简体中文</strong> | <a href="./README.en.md">English</a>
 </p>
 
+> [!IMPORTANT]
+> **本项目是二次开发版（Fork），非官方版本**
+>
+> - **上游原仓库**：[FB208/OpenBidKit_Yibiao](https://github.com/FB208/OpenBidKit_Yibiao)（作者：mark / yibiaoai，Copyright 2025-2026）
+> - **本仓库**：[xc-07-xc/OpenBidKit_Yibiao](https://github.com/xc-07-xc/OpenBidKit_Yibiao)（维护者：xc-07-xc）
+> - **修改内容**：自 2026-11-06 起新增多 Agent 标书编写流水线（LangGraph 编排、终审闸门、返工定点重写、一致性质检、侧车导出），并调整界面与公告模块，明细见 [MODIFICATIONS.md](./MODIFICATIONS.md)
+> - **许可证**：GNU **AGPL-3.0**，与上游一致；原作者署名见 [NOTICE](./NOTICE)，按 AGPL-3.0 第 7(b) 条保留
+>
+> 本项目与原作者 mark / yibiaoai 无隶属关系，不代表官方立场。下方官网、赞助商、爱发电等信息均为上游原有内容，相关权益归原作者所有。
+
 <p align="center">
   <img src="https://img.shields.io/badge/Electron-41+-47848f.svg" alt="Electron">
   <img src="https://img.shields.io/badge/React-19+-61dafb.svg" alt="React">

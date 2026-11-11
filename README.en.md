@@ -4,6 +4,16 @@
   <a href="./README.md">简体中文</a> | <strong>English</strong>
 </p>
 
+> [!IMPORTANT]
+> **This is a modified fork — not the official repository.**
+>
+> - **Upstream**: [FB208/OpenBidKit_Yibiao](https://github.com/FB208/OpenBidKit_Yibiao) by mark / yibiaoai (Copyright 2025-2026)
+> - **This repository**: [xc-07-xc/OpenBidKit_Yibiao](https://github.com/xc-07-xc/OpenBidKit_Yibiao), maintained by xc-07-xc
+> - **What changed**: since 2026-11-06 — a new multi-agent bid-writing pipeline (LangGraph orchestration, final review gate, targeted rewrite, consistency audit, sidecar export), plus UI and notice-module rework. See [MODIFICATIONS.md](./MODIFICATIONS.md).
+> - **License**: GNU **AGPL-3.0**, unchanged from upstream. The original author attribution in [NOTICE](./NOTICE) is preserved as required by AGPL-3.0 §7(b).
+>
+> This fork is not affiliated with or endorsed by the original author. The official-site, sponsor and donation links below come from upstream and belong to the original author.
+
 <p align="center">
   <img src="https://img.shields.io/badge/Electron-41+-47848f.svg" alt="Electron">
   <img src="https://img.shields.io/badge/React-19+-61dafb.svg" alt="React">
