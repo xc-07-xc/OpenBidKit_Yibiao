@@ -27,6 +27,7 @@
           <button class="nav-item" type="button" data-tab-button="traffic">访问分析</button>
           <button class="nav-item" type="button" data-tab-button="config">配置使用</button>
           <button class="nav-item" type="button" data-tab-button="models">模型使用</button>
+          <button class="nav-item" type="button" data-tab-button="model-trend">模型趋势</button>
           <button class="nav-item" type="button" data-tab-button="agent">Agent 分析</button>
           <button class="nav-item" type="button" data-tab-button="latest">最近事件</button>
         </div>
@@ -38,6 +39,7 @@
           <button class="nav-item" type="button" data-tab-button="changelog">更新日志</button>
           <button class="nav-item" type="button" data-tab-button="license">授权管理</button>
           <button class="nav-item" type="button" data-tab-button="resources">资源管理</button>
+          <button class="nav-item" type="button" data-tab-button="ads">广告管理</button>
           <button class="nav-item" type="button" data-tab-button="plugins">插件管理</button>
           <button class="nav-item" type="button" data-tab-button="model-info-cache">模型信息缓存</button>
         </div>
@@ -259,11 +261,15 @@
 
         <!-- 模型使用 -->
         <section id="tab-models" class="tab-panel" data-tab-panel="models">
+          <section class="cards model-usage-cards">
+            <div class="panel card"><span>文本模型 Token 总数</span><strong id="modelTextTokens">0</strong></div>
+            <div class="panel card"><span>生图模型总次数</span><strong id="modelImageRequests">0</strong></div>
+          </section>
           <section class="panel section">
             <div class="section-head">
               <div>
                 <h2>模型使用</h2>
-                <p>历史总数展示累计请求次数。</p>
+                <p>顶部汇总随范围联动、不随筛选变化；历史总数展示累计请求次数。</p>
               </div>
               <label class="inline-select">
                 范围
@@ -293,6 +299,27 @@
               </label>
             </div>
             <div id="modelUsage"></div>
+          </section>
+        </section>
+
+        <!-- 模型趋势 -->
+        <section id="tab-model-trend" class="tab-panel" data-tab-panel="model-trend">
+          <section class="panel section">
+            <div class="section-head">
+              <div>
+                <h2>模型趋势</h2>
+                <p>每日文本 Token 总量与按域名聚合的 Top 10 服务用量，仅统计已汇总的完整天（不含今天）。</p>
+              </div>
+              <label class="inline-select">
+                范围
+                <select id="modelTrendRange">
+                  <option value="7">7 天</option>
+                  <option value="30" selected>30 天</option>
+                  <option value="90">90 天</option>
+                </select>
+              </label>
+            </div>
+            <div id="modelTrendChart"></div>
           </section>
         </section>
 
@@ -462,7 +489,7 @@
               </div>
             </div>
             <div id="noticesTable" class="notice-table-wrap"></div>
-            <form id="noticeForm">
+            <form id="noticeForm" novalidate>
               <input id="noticeId" type="hidden" />
               <div id="noticeMeta" class="notice-meta">新增公告，保存后将同步到客户端 KV。</div>
               <div class="notice-form">
@@ -477,6 +504,13 @@
                     <option value="false">保存但不展示</option>
                   </select>
                 </label>
+                <label class="notice-field-wide">
+                  公告类型
+                  <select id="noticeType">
+                    <option value="text" selected>文字公告</option>
+                    <option value="image">图片公告</option>
+                  </select>
+                </label>
                 <div class="notice-field-wide notice-markdown-field">
                   <span id="noticeContentLabel" class="notice-field-label">Markdown 内容</span>
                   <div class="notice-editor-shell">
@@ -485,6 +519,35 @@
                       <button id="noticePreviewTab" class="notice-editor-tab" type="button" role="tab" aria-selected="false" aria-controls="noticePreviewPanel">预览</button>
                     </div>
                     <div id="noticeEditorPanel" role="tabpanel" aria-labelledby="noticeEditorTab">
+                      <div id="noticeMediaFields" class="notice-media-fields" hidden>
+                        <label>
+                          媒体类型
+                          <select id="noticeMediaKind">
+                            <option value="image" selected>图片</option>
+                            <option value="video">视频</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span id="noticeMediaUrlLabel">图片地址</span>
+                          <input id="noticeMediaUrl" type="url" placeholder="必填，HTTP(S) 媒体直链" />
+                        </label>
+                        <label>
+                          点击跳转链接
+                          <input id="noticeMediaLinkUrl" type="url" placeholder="可空，HTTP(S) 链接" />
+                        </label>
+                        <label>
+                          关闭倒计时（秒）
+                          <input id="noticeCloseDelaySeconds" type="number" min="0" max="9007199254740991" step="1" value="0" />
+                          <small>0 表示随时可关闭</small>
+                        </label>
+                        <label>
+                          关闭时强制跳转
+                          <select id="noticeOpenLinkOnClose">
+                            <option value="false" selected>否</option>
+                            <option value="true">是（须填写点击跳转链接）</option>
+                          </select>
+                        </label>
+                      </div>
                       <textarea id="noticeContent" maxlength="20000" aria-labelledby="noticeContentLabel" placeholder="输入 Markdown 公告内容。支持标题、列表、链接、加粗等语法。"></textarea>
                     </div>
                     <div id="noticePreviewPanel" class="notice-preview-panel" role="tabpanel" aria-labelledby="noticePreviewTab" hidden>
@@ -716,6 +779,55 @@
 
             <div id="resourcesStatus" class="notice-status"></div>
             <div id="resourcesTable" class="resource-table-wrap"></div>
+          </section>
+        </section>
+
+        <!-- 广告管理 -->
+        <section id="tab-ads" class="tab-panel" data-tab-panel="ads">
+          <section class="panel section resource-panel">
+            <div class="section-head">
+              <div>
+                <h2>广告管理</h2>
+                <p>配置客户端侧边栏轮播广告，每条包含一张图片和一个跳转链接。客户端固定显示 250×120，建议上传 2:1 比例图片。</p>
+              </div>
+              <div class="resource-head-actions">
+                <button id="loadAdsButton" type="button">读取广告</button>
+                <button id="newAdButton" type="button">新增广告</button>
+              </div>
+            </div>
+
+            <form id="adForm" class="resource-form">
+              <input id="adId" type="hidden" />
+              <div class="resource-image-editor">
+                <span>图片</span>
+                <div id="adImagePreview" class="resource-image-preview">无图片</div>
+                <input id="adImage" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+              </div>
+
+              <label class="resource-field-wide">
+                跳转链接
+                <input id="adLinkUrl" maxlength="500" placeholder="https://…" />
+              </label>
+              <label>
+                状态
+                <select id="adEnabled">
+                  <option value="true" selected>启用</option>
+                  <option value="false">停用</option>
+                </select>
+              </label>
+              <label>
+                排序
+                <input id="adSortOrder" type="number" value="1" />
+              </label>
+
+              <div class="resource-actions">
+                <button id="resetAdButton" class="secondary-button" type="button">清空表单</button>
+                <button id="saveAdButton" type="submit">保存广告</button>
+              </div>
+            </form>
+
+            <div id="adsStatus" class="notice-status"></div>
+            <div id="adsTable" class="resource-table-wrap"></div>
           </section>
         </section>
 

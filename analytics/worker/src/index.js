@@ -1,9 +1,10 @@
 import { corsHeaders, json } from './http.js';
+import { handleAdminAds, handlePublicAds } from './routes/ads.js';
 import { handleAgentRuntime } from './routes/agentRuntime.js';
 import { handleAdminChangelogs, handlePublicChangelogLatest, handlePublicChangelogs } from './routes/changelog.js';
 import { handleAdminAgentErrorConfig, handleAdminAgentErrorDownload, handleAdminAgentErrors, handleAgentErrorIngest } from './routes/agentErrors.js';
 import { handleClients, handleClientDetail, handleIpStats } from './routes/clients.js';
-import { handleConfigUsage, handleModelUsage } from './routes/configUsage.js';
+import { handleConfigUsage, handleModelTrend, handleModelUsage } from './routes/configUsage.js';
 import { handleGitHubRepoStats } from './routes/githubRepoStats.js';
 import { handleHealth } from './routes/health.js';
 import { handleAdminIpBlocks, handlePublicIpBlocks } from './routes/ipBlocks.js';
@@ -46,6 +47,7 @@ const routes = new Map([
   ['/resources', handlePublicResources],
   ['/resource-image', handleResourceImage],
   ['/system-settings', handlePublicSystemSettings],
+  ['/ads', handlePublicAds],
   ['/plugins', handlePublicPlugins],
   ['/plugins/download', handlePublicPluginDownload],
   ['/api/projects', handleProjects],
@@ -57,6 +59,7 @@ const routes = new Map([
   ['/api/plugins', handleAdminPlugins],
   ['/api/plugins/sync', handleAdminPluginSync],
   ['/api/system-settings', handleAdminSystemSettings],
+  ['/api/ads', handleAdminAds],
   ['/api/overview', handleOverview],
   ['/api/clients', handleClients],
   ['/api/client-detail', handleClientDetail],
@@ -68,6 +71,7 @@ const routes = new Map([
   ['/api/retention', handleRetention],
   ['/api/config-usage', handleConfigUsage],
   ['/api/model-usage', handleModelUsage],
+  ['/api/model-trend', handleModelTrend],
   ['/api/agent-runtime', handleAgentRuntime],
   ['/api/agent-errors/config', handleAdminAgentErrorConfig],
   ['/api/agent-errors/download', handleAdminAgentErrorDownload],

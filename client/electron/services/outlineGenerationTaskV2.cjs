@@ -1002,7 +1002,7 @@ function isMissingTechnicalScoreItems(content) {
 }
 
 // 运行 V2 目录业务任务；存在 AI 目录时继续扩展，存在可抽取的格式目录时独立提取模版。
-async function runOutlineGenerationTaskV2({ agentService, ordinaryAgentService, workspaceStore, knowledgeBaseService, openXmlHelperService, updateTask, checkpointTask, taskControl, payload }) {
+async function runOutlineGenerationTaskV2({ agentService, ordinaryAgentService, aiService, workspaceStore, knowledgeBaseService, openXmlHelperService, updateTask, checkpointTask, taskControl, payload }) {
   const storedPlan = workspaceStore.loadTechnicalPlan() || {};
   const restoringOutlineSelection = payload?.agent_resume?.phase === 'outline-selection';
   const outlineMode = ['response-file', 'standalone-technical', 'standalone-business'].includes(payload?.outline_mode)
@@ -1410,20 +1410,6 @@ async function runOutlineGenerationTaskV2({ agentService, ordinaryAgentService, 
     agent_connection: 'idle',
   });
 
-  if (extractTemplate && workspaceStore.listTenderSourceDocxRelativePaths().length) {
-    await ordinaryAgentService.forkPersistentTask(
-      OUTLINE_AGENT_TASK_KEY,
-      TEMPLATE_EXTRACTION_AGENT_TASK_KEY,
-      {
-        run_id: templateTaskId,
-        title: '投标模版提取',
-        status: 'created',
-        phase: 'template-extraction',
-        agent_connection: 'idle',
-      },
-    );
-  }
-
   const parallelController = new AbortController();
   const parallelSignal = AbortSignal.any([taskControl.signal, parallelController.signal]);
   let firstParallelFailure = null;
@@ -1440,6 +1426,7 @@ async function runOutlineGenerationTaskV2({ agentService, ordinaryAgentService, 
   const templatePromise = extractTemplate
     ? runTemplateExtractionTask({
         agentService: ordinaryAgentService,
+        aiService,
         workspaceStore,
         openXmlHelperService,
         taskId: templateTaskId,
@@ -1632,9 +1619,32 @@ async function runOutlineGenerationTaskV2({ agentService, ordinaryAgentService, 
   let agentResult;
   let templateResult = null;
   if (extractTemplate) {
-    const observedTemplatePromise = observeParallelBranch('投标模版提取', templatePromise).finally(() => {
+    // 目录生成失败时取消模版提取、整体失败；模版提取自身失败不取消目录：清空模版，目录照常保存，
+    // 用户点击“下一步”时由模版核对重新提取。任务取消或因目录失败被中止时仍按失败处理。
+    const failTemplate = (message) => {
+      try { workspaceStore.clearBidTemplate(); } catch {}
+      return { status: 'error', field_count: 0, error: message };
+    };
+    const observedTemplatePromise = templatePromise.then(
+      (result) => (result.status !== 'skipped' && !workspaceStore.hasBidTemplate()
+        ? failTemplate('投标模版提取任务已返回，但模版和字段清单不完整')
+        : result),
+      (error) => {
+        if (taskControl.signal.aborted || parallelController.signal.aborted) throw error;
+        return failTemplate(error?.message || String(error));
+      },
+    ).then((result) => {
       templateReturned = true;
-      if (!directoryBranchReturned) publish('投标模版提取任务已返回，正在等待目录生成任务', Math.max(currentProgress, 60));
+      if (result.status === 'error') {
+        publish(`投标模版提取失败：${result.error}。目录生成不受影响，完成后点击“下一步”可重新提取投标模版`, currentProgress);
+      }
+      if (!directoryBranchReturned) {
+        publish(result.status === 'error' ? '正在等待目录生成任务' : '投标模版提取任务已返回，正在等待目录生成任务', Math.max(currentProgress, 60));
+      }
+      return result;
+    }, (error) => {
+      templateReturned = true;
+      throw error;
     });
     const [directorySettled, templateSettled] = await Promise.allSettled([
       observedDirectoryPromise,
@@ -1658,12 +1668,12 @@ async function runOutlineGenerationTaskV2({ agentService, ordinaryAgentService, 
 
     agentResult = directorySettled.value;
     templateResult = templateSettled.value;
-    if (templateResult.status !== 'skipped' && !workspaceStore.hasBidTemplate()) {
-      try { workspaceStore.clearBidTemplate(); } catch {}
-      throw new Error('投标模版提取任务已返回，但模版和字段清单不完整');
-    }
     publish(
-      templateResult.status === 'skipped'
+      templateResult.status === 'error'
+        ? requiresTechnicalDirectoryGeneration
+          ? '目录生成完成，投标模版提取失败，请点击“下一步”重新提取投标模版'
+          : '所选一级目录已整理完成，投标模版提取失败，请点击“下一步”重新提取投标模版'
+        : templateResult.status === 'skipped'
         ? requiresTechnicalDirectoryGeneration
           ? '目录生成完成，当前无招标 Word 原件，已跳过投标模版提取'
           : '所选一级目录已整理完成，当前无招标 Word 原件，已跳过投标模版提取'
@@ -1692,6 +1702,8 @@ async function runOutlineGenerationTaskV2({ agentService, ordinaryAgentService, 
       : standaloneTechnical
       ? '目录生成与审核完成'
       : '目录生成与审核完成，当前无可抽取的投标模版'
+    : templateResult.status === 'error'
+      ? `${requiresTechnicalDirectoryGeneration ? '目录生成与审核完成' : '所选一级目录整理完成'}；投标模版提取失败：${templateResult.error}。请点击“下一步”重新提取投标模版`
     : templateResult.status === 'skipped'
       ? requiresTechnicalDirectoryGeneration
         ? '目录生成与审核完成，当前无招标 Word 原件'
@@ -1725,9 +1737,10 @@ async function runOutlineGenerationTaskV2({ agentService, ordinaryAgentService, 
           task_key: TEMPLATE_EXTRACTION_AGENT_TASK_KEY,
           run_id: templateTaskId,
           status: templateResult.status,
-          phase: templateResult.status === 'skipped' ? 'skipped' : 'completed',
+          phase: templateResult.status === 'skipped' ? 'skipped' : templateResult.status === 'error' ? 'failed' : 'completed',
           agent_connection: 'idle',
           field_count: templateResult.field_count || 0,
+          ...(templateResult.status === 'error' ? { error: templateResult.error } : {}),
           ...(templateResult.session_id ? { session_id: templateResult.session_id } : {}),
         },
       } : { template_agent: undefined }),

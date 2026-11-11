@@ -1,5 +1,5 @@
 import { json, methodNotAllowed, requireAdmin, unauthorized } from '../http.js';
-import { queryStatsConfigUsage, queryStatsModelUsage } from '../services/analyticsStatsStore.js';
+import { queryStatsConfigUsage, queryStatsModelTrend, queryStatsModelUsage, queryStatsModelUsageSummary } from '../services/analyticsStatsStore.js';
 import { isValidProjectName, logQueryError, normalizeText, safeStatsRange } from '../utils.js';
 
 function readModelFilters(url) {
@@ -57,16 +57,49 @@ export async function handleModelUsage(request, env, url) {
   }
 
   try {
+    const filters = readModelFilters(url);
+    const [usage, summary] = await Promise.all([
+      queryStatsModelUsage(env, projectName, range, filters),
+      queryStatsModelUsageSummary(env, projectName, range),
+    ]);
     return json({
       code: 0,
       projectName,
       range,
-      source: range === 'history' ? 'd1' : 'analytics_engine',
-      filters: readModelFilters(url),
-      usage: await queryStatsModelUsage(env, projectName, range, readModelFilters(url)),
+      source: range === 'history' ? 'd1' : range === 'today' ? 'analytics_engine' : 'd1+analytics_engine',
+      filters,
+      usage,
+      summary,
     });
   } catch (error) {
     logQueryError('model-usage', error);
+    return json({ code: 500, message: 'query failed' }, { status: 500 });
+  }
+}
+
+const MODEL_TREND_DAYS = new Set([7, 30, 90]);
+
+export async function handleModelTrend(request, env, url) {
+  if (request.method !== 'GET') {
+    return methodNotAllowed();
+  }
+
+  if (!requireAdmin(request, env)) {
+    return unauthorized();
+  }
+
+  const projectName = normalizeText(url.searchParams.get('projectName'), 80);
+  const days = MODEL_TREND_DAYS.has(Number(url.searchParams.get('days'))) ? Number(url.searchParams.get('days')) : 30;
+
+  if (!isValidProjectName(projectName)) {
+    return json({ code: 400, message: 'invalid projectName' }, { status: 400 });
+  }
+
+  try {
+    const trend = await queryStatsModelTrend(env, projectName, days);
+    return json({ code: 0, projectName, ...trend });
+  } catch (error) {
+    logQueryError('model-trend', error);
     return json({ code: 500, message: 'query failed' }, { status: 500 });
   }
 }

@@ -6,6 +6,8 @@ import { showUpdateReadyToast } from '../../../shared/updateToast';
 import type { FloatingToolbarGroup } from '../../../shared/ui';
 import type { AgentSelfCheckResult, AgentSelfCheckStepStatus, AiRequestMode, ClientConfig, ComponentsConfig, FileParserProvider, ImageModelConfig, ImageModelProfiles, ImageModelProvider, ImageModelRatio, ImageModelSize, ImageModelStatus, LicenseRuntimeStatus, TextModelConfig, TextModelProfiles, TextModelProvider, UpdateChannel } from '../../../shared/types';
 import type { SettingsPageRequest, SettingsPageState, SettingsTab } from '../types';
+import ChangelogDialog from '../../changelog/components/ChangelogDialog';
+import { useChangelogUnread } from '../../changelog/hooks/useChangelogUnread';
 import OfficialAccountControls from '../components/OfficialAccountControls';
 import OfficialInvoicePanel from '../components/OfficialInvoicePanel';
 import OfficialOrdersPanel from '../components/OfficialOrdersPanel';
@@ -307,6 +309,7 @@ const imageProviderDefaults: ImageModelProfiles = {
     api_key: '',
     model_name: '',
     image_size: '1024x1024',
+    image_watermark: true,
     request_mode: 'stream',
     concurrency_limit: DEFAULT_IMAGE_CONCURRENCY_LIMIT,
     status: 'untested',
@@ -436,6 +439,7 @@ function normalizeImageModelProfile(provider: ImageModelProvider, profile?: Part
     model_name: useProviderDefaultImageModel ? defaults.model_name : profile?.model_name ?? defaults.model_name,
     image_size: normalizeImageSize(provider, useProviderDefaultImageModel ? defaults.image_size : profile?.image_size ?? defaults.image_size),
     ...(provider === 'agnes' ? { image_ratio: profile?.image_ratio ?? defaults.image_ratio ?? '1:1' } : {}),
+    ...(provider === 'volcengine' ? { image_watermark: profile?.image_watermark ?? defaults.image_watermark ?? true } : {}),
     request_mode: normalizeAiRequestMode(useProviderDefaultImageModel ? defaults.request_mode : profile?.request_mode ?? defaults.request_mode),
     concurrency_limit: normalizeImageConcurrencyLimit(profile?.concurrency_limit ?? defaults.concurrency_limit),
     comfyui_workflow: profile?.comfyui_workflow ?? defaults.comfyui_workflow ?? '',
@@ -514,6 +518,7 @@ function imageProfileFromState(imageModel: SettingsPageState['imageModel']): Ima
     model_name: imageModel.model_name,
     image_size: normalizeImageSize(imageModel.provider, imageModel.image_size),
     ...(imageModel.provider === 'agnes' ? { image_ratio: imageModel.image_ratio || '1:1' } : {}),
+    ...(imageModel.provider === 'volcengine' ? { image_watermark: imageModel.image_watermark !== false } : {}),
     request_mode: imageModel.request_mode,
     concurrency_limit: normalizeImageConcurrencyLimit(imageModel.concurrency_limit),
     comfyui_workflow: imageModel.comfyui_workflow || '',
@@ -676,6 +681,8 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
   const [exportingAgentSelfCheckReport, setExportingAgentSelfCheckReport] = useState(false);
   const [agentAutoAnswerDraft, setAgentAutoAnswerDraft] = useState(false);
   const [contextLengthDialogOpen, setContextLengthDialogOpen] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
+  const { hasUnread: changelogUnread, markSeen: markChangelogSeen } = useChangelogUnread();
   const contextLengthLeaveResolverRef = useRef<((allowed: boolean) => void) | null>(null);
   const { showToast } = useToast();
   const { enabled: agentAutoAnswerEnabled } = useAutoAnswer();
@@ -2345,6 +2352,17 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
               </select>
             </label>
             )}
+            {state.imageModel.provider === 'volcengine' && (
+            <div className="settings-row">
+              <div className="settings-row-copy">
+                <strong>去除AI生成水印</strong>
+                <span>开启后生成的图片右下角不再添加“AI 生成”标识；请确保使用场景符合 AI 内容标识要求</span>
+              </div>
+              <div className="settings-action-cell">
+                <AppSwitch aria-label="去除AI生成水印" checked={state.imageModel.image_watermark === false} onCheckedChange={(checked) => updateImageModelConfig({ image_watermark: !checked })} />
+              </div>
+            </div>
+            )}
           </div>
           {imageTestPreview && (
             <div className="image-test-preview">
@@ -2621,20 +2639,30 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
                 <strong>当前版本 {appVersion || '...'}</strong>
               </div>
               <p>{updateStatusText}</p>
-              <button
-                type="button"
-                className="update-button"
-                disabled={updateBusy}
-                onClick={() => {
-                  if (updateStatus === 'downloaded') {
-                    void installDownloadedUpdate();
-                    return;
-                  }
-                  void checkForUpdates();
-                }}
-              >
-                {updateStatus === 'downloaded' ? '安装并重启' : updateBusy ? '检查中...' : '检查更新'}
-              </button>
+              <div className="about-update-actions">
+                <button
+                  type="button"
+                  className="update-button"
+                  disabled={updateBusy}
+                  onClick={() => {
+                    if (updateStatus === 'downloaded') {
+                      void installDownloadedUpdate();
+                      return;
+                    }
+                    void checkForUpdates();
+                  }}
+                >
+                  {updateStatus === 'downloaded' ? '安装并重启' : updateBusy ? '检查中...' : '检查更新'}
+                </button>
+                <button
+                  type="button"
+                  className="about-changelog-link"
+                  onClick={() => setChangelogOpen(true)}
+                >
+                  {changelogUnread ? <span className="about-changelog-dot" aria-hidden="true" /> : null}
+                  查看更新日志
+                </button>
+              </div>
             </article>
             <article className="about-info-card about-links-card">
               <span>信息与授权</span>
@@ -2720,6 +2748,11 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
         open={offlineLicenseDialogOpen}
         onOpenChange={setOfflineLicenseDialogOpen}
         onActivated={setLicenseStatus}
+      />
+      <ChangelogDialog
+        open={changelogOpen}
+        onOpenChange={setChangelogOpen}
+        onLoaded={markChangelogSeen}
       />
       {storageDialogOpen && <StorageSpaceDialog onClose={() => setStorageDialogOpen(false)} />}
       <FloatingToolbar groups={settingsToolbarGroups} label="设置保存工具条" />

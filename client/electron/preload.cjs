@@ -20,6 +20,11 @@ const bridge = {
   requiredOnlineServices: {
     getStatus: () => ipcRenderer.invoke('required-online-services:get-status'),
   },
+  notice: {
+    syncCurrent: (request) => ipcRenderer.invoke('notice:sync-current', request),
+    prepareMedia: (request) => ipcRenderer.invoke('notice:prepare-media', request),
+    releaseMedia: (leaseId) => ipcRenderer.invoke('notice:release-media', leaseId),
+  },
   donation: {
     getConfig: () => ipcRenderer.invoke('donation:get-config'),
     createTip: (request) => ipcRenderer.invoke('donation:create-tip', request),
@@ -210,7 +215,7 @@ const bridge = {
     deleteFolder: (folderId) => ipcRenderer.invoke('knowledge-base:delete-folder', folderId),
     deleteDocument: (documentId) => ipcRenderer.invoke('knowledge-base:delete-document', documentId),
     moveDocument: (documentId, targetFolderId, targetDocumentId, position) => ipcRenderer.invoke('knowledge-base:move-document', documentId, targetFolderId, targetDocumentId, position),
-    uploadDocuments: (folderId) => ipcRenderer.invoke('knowledge-base:upload-documents', folderId),
+    uploadDocuments: (folderId, filePaths) => ipcRenderer.invoke('knowledge-base:upload-documents', folderId, filePaths),
     retryDocument: (documentId) => ipcRenderer.invoke('knowledge-base:retry-document', documentId),
     startMatching: (documentId, batchSize) => ipcRenderer.invoke('knowledge-base:start-matching', documentId, batchSize), // batchSize 已忽略
     readMarkdown: (documentId) => ipcRenderer.invoke('knowledge-base:read-markdown', documentId),

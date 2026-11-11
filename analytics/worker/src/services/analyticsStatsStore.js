@@ -10,6 +10,7 @@ import {
   RAW_DATASET,
 } from '../constants.js';
 import {
+  addBusinessDateDays,
   businessDateRangeCondition,
   businessDateSqlExpression,
   businessDateTimeSqlExpression,
@@ -20,6 +21,7 @@ import {
   sqlString,
 } from '../utils.js';
 import { queryAnalytics } from './analyticsQuery.js';
+import { addAdClickCounts, listAdminAds } from './adStore.js';
 import { listBlockedIps } from './ipBlockStore.js';
 import { listAdminResources } from './resourceStore.js';
 
@@ -1059,7 +1061,7 @@ async function queryModelHistoryField(db, projectName, field, filters) {
   `, [projectName, field.requestType]);
 }
 
-async function queryModelAeField(env, projectName, range, field, filters) {
+async function queryModelAeField(env, projectName, field, filters, dateCondition) {
   const project = sqlString(projectName);
   const result = await queryAnalytics(env, `
     SELECT
@@ -1073,22 +1075,100 @@ async function queryModelAeField(env, projectName, range, field, filters) {
       AND blob2 = 'ai_request'
       AND blob12 = ${sqlString(field.requestType)}
       AND blob11 != ''
-      AND ${aeRangeCondition(range)}
+      AND ${dateCondition}
       ${modelFiltersAeSql(filters)}
     GROUP BY provider, endpoint_host, model
-    ORDER BY events DESC, model ASC
-    LIMIT 100
+    LIMIT ${MAX_ANALYTICS_ROWS}
   `);
   return result.data || [];
 }
 
+// stats_models_daily 中的完成哨兵行：request_type/provider/endpoint_host/model 全为空，
+// 只在某天全部模型分块写完后落库，表示该日期已"完整"汇总进每日表（零用量日期同样写哨兵）。
+// 窗口内每个业务日期是否已完整汇总进每日表，由哨兵行决定而不是由明细行存在性决定：
+// 中间某天 rollup 失败或只写完部分分块时没有哨兵，查询会自动交给 AE 补齐，不会产生数据空洞。
+async function queryModelRolledDates(db, projectName, startDate, endDate) {
+  const rows = await all(db, `
+    SELECT DISTINCT activity_date AS activityDate
+    FROM stats_models_daily
+    WHERE project_name = ? AND request_type = '' AND model = ''
+      AND activity_date >= ? AND activity_date <= ?
+  `, [projectName, startDate, endDate]);
+  return new Set(rows.map((row) => String(row.activityDate || '').slice(0, 10)));
+}
+
+// 7天/30天 的数据分区：窗口内最早未完整汇总的日期为界，
+// [窗口起点, 分界日-1] 读每日表，[分界日, 今天] 读 AE；today 只读 AE 当天。
+async function modelUsagePartition(db, projectName, range) {
+  const days = range === '7' || range === '30' ? Number(range) : 0;
+  if (!days) {
+    return { dailyStart: '', dailyEnd: '', aeStart: getBusinessToday() };
+  }
+  const windowStart = getBusinessDateDaysAgo(days - 1);
+  const yesterday = getBusinessDateDaysAgo(1);
+  const rolledDates = await queryModelRolledDates(db, projectName, windowStart, yesterday);
+  let partitionDate = windowStart;
+  while (partitionDate <= yesterday && rolledDates.has(partitionDate)) {
+    partitionDate = addBusinessDateDays(partitionDate, 1);
+  }
+  return {
+    dailyStart: windowStart,
+    dailyEnd: addBusinessDateDays(partitionDate, -1),
+    aeStart: partitionDate,
+  };
+}
+
+async function queryModelDailyField(db, projectName, field, filters, dateBounds) {
+  return all(db, `
+    SELECT
+      provider,
+      endpoint_host,
+      model,
+      SUM(request_count) AS events,
+      SUM(total_tokens) AS totalTokens
+    FROM stats_models_daily
+    WHERE project_name = ? AND request_type = ?
+      AND activity_date >= ? AND activity_date <= ?${modelFiltersSql(filters)}
+    GROUP BY provider, endpoint_host, model
+  `, [projectName, field.requestType, dateBounds.dailyStart, dateBounds.dailyEnd]);
+}
+
+// 合并每日表已汇总部分与 AE 未汇总尾部，键为 服务商+域名+模型。
+function mergeModelUsageRows(baseRows = [], extraRows = []) {
+  const merged = new Map();
+  for (const row of [...baseRows, ...extraRows]) {
+    const key = `${row.provider || ''}\0${row.endpoint_host || ''}\0${row.model || ''}`;
+    const existing = merged.get(key) || {
+      provider: row.provider || '',
+      endpoint_host: row.endpoint_host || '',
+      model: row.model || '',
+      events: 0,
+      totalTokens: 0,
+    };
+    existing.events += number(row.events);
+    existing.totalTokens += number(row.totalTokens);
+    merged.set(key, existing);
+  }
+  return Array.from(merged.values())
+    .sort((left, right) => right.events - left.events || String(left.model).localeCompare(String(right.model), 'zh-CN', { numeric: true }))
+    .slice(0, 100);
+}
+
 export async function queryStatsModelUsage(env, projectName, range, filters) {
-  const db = range === 'history' ? requireStatsDb(env) : null;
-  const results = await Promise.all(MODEL_USAGE_FIELDS.map((field) => (
-    range === 'history'
-      ? queryModelHistoryField(db, projectName, field, filters)
-      : queryModelAeField(env, projectName, range, field, filters)
-  )));
+  const db = requireStatsDb(env);
+  const partition = range === 'history' ? null : await modelUsagePartition(db, projectName, range);
+  const aeCondition = partition ? businessDateRangeCondition(partition.aeStart, getBusinessToday()) : '';
+  const hasDailyPart = Boolean(partition && partition.dailyStart && partition.dailyEnd >= partition.dailyStart);
+  const results = await Promise.all(MODEL_USAGE_FIELDS.map((field) => {
+    if (range === 'history') {
+      return queryModelHistoryField(db, projectName, field, filters);
+    }
+    // 非历史范围：每日表覆盖完整汇总日期，AE 补齐未汇总尾部（含今天）。
+    return Promise.all([
+      hasDailyPart ? queryModelDailyField(db, projectName, field, filters, partition) : [],
+      queryModelAeField(env, projectName, field, filters, aeCondition),
+    ]).then(([dailyRows, aeRows]) => mergeModelUsageRows(dailyRows, aeRows));
+  }));
   const usage = {};
   MODEL_USAGE_FIELDS.forEach((field, index) => {
     usage[field.key] = (results[index] || []).map((row) => ({
@@ -1100,6 +1180,172 @@ export async function queryStatsModelUsage(env, projectName, range, filters) {
     }));
   });
   return usage;
+}
+
+function createModelUsageSummary() {
+  const summary = {};
+  for (const field of MODEL_USAGE_FIELDS) {
+    summary[field.key] = { events: 0, totalTokens: 0 };
+  }
+  return summary;
+}
+
+function addModelUsageSummaryRow(summary, requestType, events, totalTokens) {
+  const field = MODEL_USAGE_FIELDS.find((item) => item.requestType === requestType);
+  if (!field) return;
+  summary[field.key].events += number(events);
+  summary[field.key].totalTokens += number(totalTokens);
+}
+
+// 不随筛选变化的范围汇总：历史走累计表，今天走 AE，7天/30天 由 stats_daily 汇总列加 AE 未汇总尾部。
+export async function queryStatsModelUsageSummary(env, projectName, range) {
+  const db = requireStatsDb(env);
+  const summary = createModelUsageSummary();
+
+  if (range === 'history') {
+    const rows = await all(db, `
+      SELECT
+        request_type AS requestType,
+        SUM(request_count) AS events,
+        SUM(total_tokens) AS totalTokens
+      FROM stats_models
+      WHERE project_name = ?
+      GROUP BY request_type
+    `, [projectName]);
+    for (const row of rows) {
+      addModelUsageSummaryRow(summary, row.requestType, row.events, row.totalTokens);
+    }
+    return summary;
+  }
+
+  const partition = await modelUsagePartition(db, projectName, range);
+  const aeCondition = businessDateRangeCondition(partition.aeStart, getBusinessToday());
+  const hasDailyPart = Boolean(partition.dailyStart && partition.dailyEnd >= partition.dailyStart);
+  const [dailyTotals, todayRows] = await Promise.all([
+    hasDailyPart
+      ? first(db, `
+          SELECT
+            SUM(text_request_count) AS textEvents,
+            SUM(text_total_tokens) AS textTokens,
+            SUM(image_request_count) AS imageEvents,
+            SUM(image_total_tokens) AS imageTokens
+          FROM stats_daily
+          WHERE project_name = ? AND activity_date >= ? AND activity_date <= ?
+        `, [projectName, partition.dailyStart, partition.dailyEnd])
+      : null,
+    queryAnalytics(env, `
+      SELECT
+        blob12 AS requestType,
+        SUM(_sample_interval) AS events,
+        SUM(double4 * _sample_interval) AS totalTokens
+      FROM ${DATASET}
+      WHERE blob1 = ${sqlString(projectName)}
+        AND blob2 = 'ai_request'
+        AND blob11 != ''
+        AND ${aeCondition}
+      GROUP BY requestType
+    `),
+  ]);
+
+  if (dailyTotals) {
+    addModelUsageSummaryRow(summary, 'text', dailyTotals.textEvents, dailyTotals.textTokens);
+    addModelUsageSummaryRow(summary, 'image', dailyTotals.imageEvents, dailyTotals.imageTokens);
+  }
+  for (const row of todayRows.data || []) {
+    addModelUsageSummaryRow(summary, row.requestType, row.events, row.totalTokens);
+  }
+  return summary;
+}
+
+// 模型趋势：窗口为 [今天-days .. 昨天] 共 days 个完整天（不含今天），
+// 按域名(endpoint_host)聚合文本 token；哨兵分区内 D1 读每日表、缺口与尾部读 AE。
+export async function queryStatsModelTrend(env, projectName, days) {
+  const db = requireStatsDb(env);
+  const windowStart = getBusinessDateDaysAgo(days);
+  const windowEnd = getBusinessDateDaysAgo(1);
+  const rolledDates = await queryModelRolledDates(db, projectName, windowStart, windowEnd);
+  let aeStart = windowStart;
+  while (aeStart <= windowEnd && rolledDates.has(aeStart)) {
+    aeStart = addBusinessDateDays(aeStart, 1);
+  }
+  const dailyEnd = addBusinessDateDays(aeStart, -1);
+
+  const [dailyRows, aeRows] = await Promise.all([
+    dailyEnd >= windowStart
+      ? all(db, `
+          SELECT
+            activity_date AS activityDate,
+            endpoint_host AS endpointHost,
+            SUM(total_tokens) AS totalTokens
+          FROM stats_models_daily
+          WHERE project_name = ? AND request_type = 'text'
+            AND activity_date >= ? AND activity_date <= ?
+          GROUP BY activityDate, endpointHost
+        `, [projectName, windowStart, dailyEnd])
+      : [],
+    aeStart <= windowEnd
+      ? queryAnalytics(env, `
+          SELECT
+            ${businessDateSqlExpression()} AS activityDate,
+            blob10 AS endpointHost,
+            SUM(double4 * _sample_interval) AS totalTokens
+          FROM ${DATASET}
+          WHERE blob1 = ${sqlString(projectName)}
+            AND blob2 = 'ai_request'
+            AND blob12 = 'text'
+            AND blob11 != ''
+            AND ${businessDateRangeCondition(aeStart, windowEnd)}
+          GROUP BY activityDate, endpointHost
+          LIMIT ${MAX_ANALYTICS_ROWS}
+        `).then((result) => {
+          if ((result.data || []).length >= MAX_ANALYTICS_ROWS) {
+            throw new Error('model-trend analytics result hit row limit');
+          }
+          return result.data || [];
+        })
+      : [],
+  ]);
+
+  // date -> endpointHost -> tokens，同时累计各域名窗口总量用于 top10 排序。
+  const byDate = new Map();
+  const hostTotals = new Map();
+  const accumulate = (activityDate, endpointHost, totalTokens) => {
+    const date = String(activityDate || '').slice(0, 10);
+    const host = normalizeText(endpointHost, 120);
+    const tokens = number(totalTokens);
+    if (!date || tokens <= 0) return;
+    let perHost = byDate.get(date);
+    if (!perHost) {
+      perHost = new Map();
+      byDate.set(date, perHost);
+    }
+    perHost.set(host, (perHost.get(host) || 0) + tokens);
+    hostTotals.set(host, (hostTotals.get(host) || 0) + tokens);
+  };
+  for (const row of dailyRows) accumulate(row.activityDate, row.endpointHost, row.totalTokens);
+  for (const row of aeRows) accumulate(row.activityDate, row.endpointHost, row.totalTokens);
+
+  const dates = [];
+  for (let cursor = windowStart; cursor <= windowEnd; cursor = addBusinessDateDays(cursor, 1)) {
+    dates.push(cursor);
+  }
+
+  const topHosts = Array.from(hostTotals.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], 'zh-CN'))
+    .slice(0, 10)
+    .map(([host]) => host);
+
+  const total = dates.map((date) => {
+    let sum = 0;
+    for (const tokens of (byDate.get(date)?.values() || [])) sum += tokens;
+    return sum;
+  });
+  const series = topHosts.map((endpointHost) => ({
+    endpointHost,
+    values: dates.map((date) => number(byDate.get(date)?.get(endpointHost))),
+  }));
+
+  return { days, dates, total, series };
 }
 
 function createAgentRuntimeSummary(source = {}) {
@@ -1395,7 +1641,7 @@ export const ROLLUP_CRON_STAGES = [
   { cron: '30 17 * * *', stages: ['clients'], beijingTime: '01:30', description: '写入客户端生命周期和最后访问信息' },
   { cron: '0 18 * * *', stages: ['pages', 'versions'], beijingTime: '02:00', description: '写入页面访问累计值，写入版本事件量并刷新版本客户端数' },
   { cron: '30 18 * * *', stages: ['configs', 'models', 'agents'], beijingTime: '02:30', description: '写入配置使用、模型请求、Agent 执行和 Total Tokens 累计值' },
-  { cron: '0 19 * * *', stages: ['retention', 'resources'], beijingTime: '03:00', description: '写入留存快照，重算资源历史点击量并完成整日汇总' },
+  { cron: '0 19 * * *', stages: ['retention', 'resources'], beijingTime: '03:00', description: '写入留存快照，累加资源和广告昨日点击量并完成整日汇总' },
 ];
 
 export const OVERVIEW_AI_TOTALS_CRON = '30 18 * * *';
@@ -2291,29 +2537,86 @@ async function queryRollupModelRows(env, activityDate, projectNames) {
   })).filter((row) => row.projectName && row.requestType && row.model && row.requestCount > 0);
 }
 
-function prepareModelStatements(db, rows, updatedAt) {
+function prepareModelStatements(db, rows, updatedAt, activityDate) {
   const json = rowsJson(rows);
-  return [db.prepare(`
-    WITH rows AS (
-      SELECT
-        json_extract(item.value, '$.projectName') AS project_name,
-        json_extract(item.value, '$.requestType') AS request_type,
-        json_extract(item.value, '$.provider') AS provider,
-        json_extract(item.value, '$.endpointHost') AS endpoint_host,
-        json_extract(item.value, '$.model') AS model,
-        CAST(json_extract(item.value, '$.requestCount') AS INTEGER) AS request_count,
-        CAST(json_extract(item.value, '$.totalTokens') AS INTEGER) AS total_tokens
-      FROM json_each(?) AS item
-    )
-    INSERT INTO stats_models (project_name, request_type, provider, endpoint_host, model, request_count, total_tokens, updated_at)
-    SELECT project_name, request_type, provider, endpoint_host, model, request_count, total_tokens, ?
-    FROM rows
-    WHERE project_name != '' AND request_type != '' AND model != ''
-    ON CONFLICT(project_name, request_type, provider, endpoint_host, model) DO UPDATE SET
-      request_count = stats_models.request_count + excluded.request_count,
-      total_tokens = stats_models.total_tokens + excluded.total_tokens,
+  return [
+    db.prepare(`
+      WITH rows AS (
+        SELECT
+          json_extract(item.value, '$.projectName') AS project_name,
+          json_extract(item.value, '$.requestType') AS request_type,
+          json_extract(item.value, '$.provider') AS provider,
+          json_extract(item.value, '$.endpointHost') AS endpoint_host,
+          json_extract(item.value, '$.model') AS model,
+          CAST(json_extract(item.value, '$.requestCount') AS INTEGER) AS request_count,
+          CAST(json_extract(item.value, '$.totalTokens') AS INTEGER) AS total_tokens
+        FROM json_each(?) AS item
+      )
+      INSERT INTO stats_models (project_name, request_type, provider, endpoint_host, model, request_count, total_tokens, updated_at)
+      SELECT project_name, request_type, provider, endpoint_host, model, request_count, total_tokens, ?
+      FROM rows
+      WHERE project_name != '' AND request_type != '' AND model != ''
+      ON CONFLICT(project_name, request_type, provider, endpoint_host, model) DO UPDATE SET
+        request_count = stats_models.request_count + excluded.request_count,
+        total_tokens = stats_models.total_tokens + excluded.total_tokens,
+        updated_at = excluded.updated_at
+    `).bind(json, updatedAt),
+    db.prepare(`
+      WITH rows AS (
+        SELECT
+          json_extract(item.value, '$.projectName') AS project_name,
+          json_extract(item.value, '$.requestType') AS request_type,
+          json_extract(item.value, '$.provider') AS provider,
+          json_extract(item.value, '$.endpointHost') AS endpoint_host,
+          json_extract(item.value, '$.model') AS model,
+          CAST(json_extract(item.value, '$.requestCount') AS INTEGER) AS request_count,
+          CAST(json_extract(item.value, '$.totalTokens') AS INTEGER) AS total_tokens
+        FROM json_each(?) AS item
+      )
+      INSERT INTO stats_models_daily (project_name, activity_date, request_type, provider, endpoint_host, model, request_count, total_tokens, updated_at)
+      SELECT project_name, ?, request_type, provider, endpoint_host, model, request_count, total_tokens, ?
+      FROM rows
+      WHERE project_name != '' AND request_type != '' AND model != ''
+      ON CONFLICT(project_name, activity_date, request_type, provider, endpoint_host, model) DO UPDATE SET
+        request_count = excluded.request_count,
+        total_tokens = excluded.total_tokens,
+        updated_at = excluded.updated_at
+    `).bind(json, activityDate, updatedAt),
+  ];
+}
+
+// 由全天模型明细行计算 stats_daily 的模型汇总列，绝对值 UPDATE 保证任意重试都不重复计数。
+// 只做 UPDATE 不做 INSERT：stats_daily 行不存在说明该天 daily stage 未跑过，
+// 不能制造"仅有模型列"的行，否则会触发 rollupStatsDay 的 hasDailyRollupRow 完成误判、跳过整天汇总。
+function prepareModelDailyTotalsStatement(db, projectName, activityDate, rows, updatedAt) {
+  const totals = { text: { count: 0, tokens: 0 }, image: { count: 0, tokens: 0 } };
+  for (const row of rows || []) {
+    const bucket = totals[String(row?.requestType || '')];
+    if (!bucket) continue;
+    bucket.count += number(row.requestCount);
+    bucket.tokens += number(row.totalTokens);
+  }
+  return db.prepare(`
+    UPDATE stats_daily
+    SET
+      text_request_count = ?,
+      text_total_tokens = ?,
+      image_request_count = ?,
+      image_total_tokens = ?,
+      updated_at = ?
+    WHERE project_name = ? AND activity_date = ?
+  `).bind(totals.text.count, totals.text.tokens, totals.image.count, totals.image.tokens, updatedAt, projectName, activityDate);
+}
+
+// 每日表完成哨兵：空 request_type/provider/endpoint_host/model 一行，只在该天全部模型分块写完后落库。
+// 查询侧按哨兵行划分 D1/AE 覆盖范围；哨兵写入失败时该天按未完整汇总处理，自动由 AE 补齐，不产生数据错误。
+function prepareModelDailyDoneStatement(db, projectName, activityDate, updatedAt) {
+  return db.prepare(`
+    INSERT INTO stats_models_daily (project_name, activity_date, request_type, provider, endpoint_host, model, request_count, total_tokens, updated_at)
+    VALUES (?, ?, '', '', '', '', 0, 0, ?)
+    ON CONFLICT(project_name, activity_date, request_type, provider, endpoint_host, model) DO UPDATE SET
       updated_at = excluded.updated_at
-  `).bind(json, updatedAt)];
+  `).bind(projectName, activityDate, updatedAt);
 }
 
 async function runModelsStage(env, activityDate, projectNames, completedByProject) {
@@ -2321,7 +2624,24 @@ async function runModelsStage(env, activityDate, projectNames, completedByProjec
   const grouped = groupRowsByProject(await queryRollupModelRows(env, activityDate, projectNames), projectNames);
   const results = [];
   for (const projectName of uniqueProjectNames(projectNames)) {
-    results.push(await executeProjectStageChunks(db, completedByProject, projectName, activityDate, 'models', grouped.get(projectName) || [], prepareModelStatements));
+    const rows = grouped.get(projectName) || [];
+    // stats_daily 汇总列按全天行算绝对值，注入第一个未完成的 chunk 原子批次；
+    // 已完成 chunk 不会再次调用 prepareStatements，批次失败则整体回滚，任意重试都不重复计。
+    let totalsWritten = false;
+    const result = await executeProjectStageChunks(db, completedByProject, projectName, activityDate, 'models', rows, (chunkDb, chunk, updatedAt) => {
+      const statements = prepareModelStatements(chunkDb, chunk, updatedAt, activityDate);
+      if (!totalsWritten) {
+        statements.unshift(prepareModelDailyTotalsStatement(chunkDb, projectName, activityDate, rows, updatedAt));
+        totalsWritten = true;
+      }
+      return statements;
+    });
+    // 哨兵以 stats_daily 行存在为门槛：行不存在说明 daily stage 未跑过该天，
+    // 该天按未完整汇总处理，由查询侧自动回退 AE、并留给完整 rollup 补齐。
+    if (!result.skipped && await hasDailyRollupRow(db, projectName, activityDate)) {
+      await prepareModelDailyDoneStatement(db, projectName, activityDate, nowText()).run();
+    }
+    results.push(result);
   }
   return results;
 }
@@ -2517,14 +2837,15 @@ export async function backfillClientActivityWindow(env, projectName, startDate, 
   return { projectName: normalizeProjectName(projectName), startDate, endDate, rows: rows.length };
 }
 
-async function queryHistoricalResourceClickRows(env, activityDate, projectNames) {
+// 只取昨日增量：AE 原始事件三个月过期，窗口总量绝对覆盖会让早期点击持续缩水。
+async function queryDailyResourceClickRows(env, activityDate, projectNames) {
   const result = await queryAnalytics(env, `
     SELECT blob9 AS resourceKey, SUM(_sample_interval) AS clickCount
     FROM ${DATASET}
     WHERE blob1 IN ${projectsSql(projectNames)}
       AND blob2 = 'resource_click'
       AND blob9 != ''
-      AND ${businessDateSqlExpression()} <= ${sqlString(activityDate)}
+      AND ${businessDateCondition(activityDate)}
     GROUP BY resourceKey
     ORDER BY resourceKey ASC
     LIMIT ${MAX_ANALYTICS_ROWS}
@@ -2535,16 +2856,34 @@ async function queryHistoricalResourceClickRows(env, activityDate, projectNames)
   })).filter((row) => row.resourceKey);
 }
 
-function prepareResourceClickSetStatement(db, rows) {
+async function queryDailyAdClickRows(env, activityDate, projectNames) {
+  const result = await queryAnalytics(env, `
+    SELECT blob9 AS adKey, SUM(_sample_interval) AS clickCount
+    FROM ${DATASET}
+    WHERE blob1 IN ${projectsSql(projectNames)}
+      AND blob2 = 'ad_click'
+      AND blob9 != ''
+      AND ${businessDateCondition(activityDate)}
+    GROUP BY adKey
+    ORDER BY adKey ASC
+    LIMIT ${MAX_ANALYTICS_ROWS}
+  `);
+  return (result.data || []).map((row) => ({
+    adKey: normalizeText(row.adKey, 120),
+    clickCount: number(row.clickCount),
+  })).filter((row) => row.adKey);
+}
+
+function prepareResourceClickAddStatement(db, rows) {
   return db.prepare(`
     WITH rows AS (
       SELECT
         json_extract(item.value, '$.id') AS id,
-        CAST(json_extract(item.value, '$.clickCount') AS INTEGER) AS click_count
+        CAST(json_extract(item.value, '$.clickDelta') AS INTEGER) AS click_delta
       FROM json_each(?) AS item
     )
     UPDATE resources
-    SET click_count = COALESCE((SELECT click_count FROM rows WHERE rows.id = resources.id), 0)
+    SET click_count = click_count + COALESCE((SELECT click_delta FROM rows WHERE rows.id = resources.id), 0)
     WHERE id IN (SELECT id FROM rows)
   `).bind(rowsJson(rows));
 }
@@ -2566,14 +2905,22 @@ async function runResourcesStage(env, activityDate, projectNames, completedByPro
 
   const resourceDb = requireResourceDb(env);
   const resources = await listAdminResources(env, { origin: '' });
-  const countByKey = new Map((await queryHistoricalResourceClickRows(env, activityDate, projects))
+  const countByKey = new Map((await queryDailyResourceClickRows(env, activityDate, projects))
     .map((row) => [row.resourceKey, row.clickCount]));
   const rows = resources.map((resource) => ({
     id: resource.id,
-    clickCount: Math.max(0, Math.floor(countByKey.get(resource.analyticsKey) || 0)),
+    clickDelta: Math.max(0, Math.floor(countByKey.get(resource.analyticsKey) || 0)),
   }));
   for (const chunk of chunkRows(rows)) {
-    await prepareResourceClickSetStatement(resourceDb, chunk).run();
+    await prepareResourceClickAddStatement(resourceDb, chunk).run();
+  }
+  if (!env.RESOURCE_BUCKET) {
+    console.warn('[analytics] ad click rollup skipped: RESOURCE_BUCKET is not configured');
+  } else {
+    // 广告点击按昨日增量累加 R2 元数据，口径与资源点击一致；失败抛出让 stage 重试。
+    const adCountByKey = new Map((await queryDailyAdClickRows(env, activityDate, projects))
+      .map((row) => [row.adKey, row.clickCount]));
+    await addAdClickCounts(env, adCountByKey);
   }
   await markProjectsStageSuccess(statsDb, pendingProjects, activityDate, 'resources');
   await markRollupRunsSuccess(statsDb, pendingProjects, activityDate);

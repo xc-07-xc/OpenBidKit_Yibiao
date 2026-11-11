@@ -18,6 +18,11 @@ function getOfficialRechargeQrCachePath(app) {
   return path.join(getUserDataPath(app), 'official_recharge_qr_cache.json');
 }
 
+/** 自动公告的媒体缓存独立于业务工作区。 */
+function getNoticeCacheDir(app) {
+  return path.join(getUserDataPath(app), 'notice-cache');
+}
+
 function getLicenseFilePath(app) {
   return path.join(getUserDataPath(app), 'license.json');
 }
@@ -158,6 +163,11 @@ function getAiLogsDir(app) {
   return path.join(getUserDataPath(app), 'logs', 'ai');
 }
 
+// 完整接口日志与现有 AI 摘要日志分目录保存。
+function getAiRawLogsDir(app) {
+  return path.join(getUserDataPath(app), 'logs', 'ai-raw');
+}
+
 function getDeveloperLogsDir(app, moduleName) {
   return path.join(getUserDataPath(app), 'logs', String(moduleName || 'app'));
 }
@@ -228,17 +238,31 @@ function getBundledOpenXmlHelperPath(app) {
   return path.join(getBundledOpenXmlHelperDir(app), fileName);
 }
 
+/** 安装包内随版本附带的诊断资料（构建时从提交导出的源码）。 */
+function getBundledDiagnosisSourceDir() {
+  return path.join(process.resourcesPath, 'diagnosis-source');
+}
+
+/** 诊断 Agent 阅读的源码资料：安装版为同步到 userData 的副本，开发版直接使用仓库根目录。 */
+function getDiagnosisSourceDir(app) {
+  if (app.isPackaged) return path.join(getUserDataPath(app), 'diagnosis-source');
+  return path.join(__dirname, '..', '..', '..');
+}
+
 module.exports = {
   getAgentRuntimeDir,
   getAiLogsDir,
+  getAiRawLogsDir,
   getBlindCheckDir,
   getBlindCheckSourceDir,
   getBlindCheckFixedDir,
   getBlindCheckTenderDir,
   getBundledAgentToolsBinDir,
+  getBundledDiagnosisSourceDir,
   getBundledOpenXmlHelperDir,
   getBundledOpenXmlHelperPath,
   getDeveloperLogsDir,
+  getDiagnosisSourceDir,
   getDuplicateCheckContentDir,
   getDuplicateCheckDir,
   getConfigFilePath,
@@ -251,6 +275,7 @@ module.exports = {
   getImportedImagesDir,
   getKnowledgeBaseDir,
   getLicenseFilePath,
+  getNoticeCacheDir,
   getOfficialApiSessionFilePath,
   getOfficialRechargeQrCachePath,
   getOpenXmlHelperDebugExecutablePath,
